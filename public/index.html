@@ -48,6 +48,12 @@
           <span id="display-room-code" class="room-code">----</span>
         </div>
       </div>
+      
+      <div class="leave-room-container">
+        <button id="leave-room-btn" class="btn btn-secondary btn-small leave-btn">
+          Leave Room
+        </button>
+      </div>
 
       <div class="teams-container">
         <div class="team team-a" id="team-a-drop" data-team="A">
@@ -62,6 +68,14 @@
       <p id="drag-hint" class="drag-hint hidden">Drag players to rearrange teams</p>
 
       <div id="host-lobby-controls" class="host-controls hidden">
+        <div class="language-selector">
+          <label class="selector-label">Language</label>
+          <div class="language-buttons">
+            <button class="lang-btn active" data-lang="en">English</button>
+            <button class="lang-btn" data-lang="he">עברית</button>
+          </div>
+        </div>
+
         <div class="difficulty-selector">
           <label class="selector-label">Difficulty</label>
           <div class="difficulty-buttons">
@@ -70,6 +84,30 @@
             <button class="diff-btn" data-difficulty="hard">Hard</button>
           </div>
         </div>
+        
+        <div class="skips-selector">
+          <label class="selector-label">Max Skips Per Round</label>
+          <div class="skips-buttons">
+            <button class="skip-limit-btn" data-skips="0">0</button>
+            <button class="skip-limit-btn" data-skips="1">1</button>
+            <button class="skip-limit-btn active" data-skips="2">2</button>
+            <button class="skip-limit-btn" data-skips="3">3</button>
+            <button class="skip-limit-btn" data-skips="999">∞</button>
+          </div>
+        </div>
+
+        <div class="host-transfer">
+          <label class="selector-label">Transfer Host</label>
+          <div class="transfer-row">
+            <select id="transfer-host-select" class="select-field">
+              <option value="">Select player...</option>
+            </select>
+            <button id="transfer-host-btn" class="btn btn-secondary btn-small">
+              Transfer
+            </button>
+          </div>
+        </div>
+
         <button id="start-game-btn" class="btn btn-primary btn-large">
           Start Game
         </button>
@@ -191,6 +229,13 @@
         </button>
         <button id="end-game-btn" class="btn btn-danger btn-small">
           End Game
+        </button>
+      </div>
+
+      <!-- Leave Game Button (all players) -->
+      <div class="leave-game-container">
+        <button id="leave-game-btn" class="btn btn-secondary btn-small leave-btn">
+          Leave Game
         </button>
       </div>
     </div>

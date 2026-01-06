@@ -12,9 +12,12 @@ let roomCode = localStorage.getItem('roomCode');
 let playerName = localStorage.getItem('playerName');
 let isHost = false;
 let currentState = null;
-let selectedDifficulty = 'medium';
+let selectedDifficulty = 'easy';
 let selectedTimer = 60;
+let selectedLanguage = 'en';
+let selectedMaxSkips = 2;
 let currentRoundWordsList = [];
+let skipsRemaining = 2;
 
 // DOM Elements
 const screens = {
@@ -41,6 +44,12 @@ const hostLobbyControls = document.getElementById('host-lobby-controls');
 const waitingMessage = document.getElementById('waiting-message');
 const startGameBtn = document.getElementById('start-game-btn');
 const difficultyBtns = document.querySelectorAll('.diff-btn');
+const languageBtns = document.querySelectorAll('.lang-btn');
+const skipLimitBtns = document.querySelectorAll('.skip-limit-btn');
+const leaveRoomBtn = document.getElementById('leave-room-btn');
+const transferHostSelect = document.getElementById('transfer-host-select');
+const transferHostBtn = document.getElementById('transfer-host-btn');
+const leaveGameBtn = document.getElementById('leave-game-btn');
 
 // Game elements
 const scoreA = document.getElementById('score-a');
@@ -230,6 +239,41 @@ function updateActorSelect(state) {
   });
 }
 
+function updateTransferHostSelect(state) {
+  if (!transferHostSelect) return;
+  
+  transferHostSelect.innerHTML = '<option value="">Select player...</option>';
+  
+  if (!state || !state.players) return;
+  
+  state.players.forEach(player => {
+    // Show all connected players except yourself
+    if (player.id !== playerId && player.connected) {
+      const option = document.createElement('option');
+      option.value = player.id;
+      option.textContent = `${player.name} (Team ${player.team})`;
+      transferHostSelect.appendChild(option);
+    }
+  });
+  
+  // Debug log to help identify issues
+  console.log('Transfer dropdown updated:', transferHostSelect.options.length - 1, 'players available');
+}
+
+function updateSkipButton(remaining, max) {
+  skipsRemaining = remaining;
+  if (max === 999) {
+    skipBtn.textContent = 'Skip';
+    skipBtn.disabled = false;
+  } else if (remaining <= 0) {
+    skipBtn.textContent = 'No Skips Left';
+    skipBtn.disabled = true;
+  } else {
+    skipBtn.textContent = `Skip (${remaining} left)`;
+    skipBtn.disabled = false;
+  }
+}
+
 function updateCurrentRoundWords() {
   currentRoundWords.innerHTML = '';
   
@@ -409,8 +453,54 @@ difficultyBtns.forEach(btn => {
   });
 });
 
+languageBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    languageBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedLanguage = btn.dataset.lang;
+  });
+});
+
+skipLimitBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    skipLimitBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedMaxSkips = parseInt(btn.dataset.skips);
+    socket.emit('set-max-skips', { maxSkips: selectedMaxSkips });
+  });
+});
+
+leaveRoomBtn.addEventListener('click', () => {
+  if (confirm('Are you sure you want to leave the room?')) {
+    socket.emit('leave-room');
+    localStorage.removeItem('roomCode');
+    roomCode = null;
+    showScreen('landing');
+    showToast('You left the room', 'info');
+  }
+});
+
+leaveGameBtn.addEventListener('click', () => {
+  if (confirm('Are you sure you want to leave the game?')) {
+    socket.emit('leave-room');
+    localStorage.removeItem('roomCode');
+    roomCode = null;
+    showScreen('landing');
+    showToast('You left the game', 'info');
+  }
+});
+
+transferHostBtn.addEventListener('click', () => {
+  const newHostId = transferHostSelect.value;
+  if (!newHostId) {
+    showToast('Please select a player', 'error');
+    return;
+  }
+  socket.emit('transfer-host', { newHostId });
+});
+
 startGameBtn.addEventListener('click', () => {
-  socket.emit('start-game', { difficulty: selectedDifficulty });
+  socket.emit('start-game', { difficulty: selectedDifficulty, language: selectedLanguage });
 });
 
 // Event Listeners - Game
@@ -470,6 +560,7 @@ socket.on('room-created', (data) => {
   
   displayRoomCode.textContent = roomCode;
   updatePlayerLists(data.state);
+  updateTransferHostSelect(data.state);
   hostLobbyControls.classList.remove('hidden');
   waitingMessage.classList.add('hidden');
   
@@ -485,6 +576,7 @@ socket.on('room-joined', (data) => {
   
   displayRoomCode.textContent = roomCode;
   updatePlayerLists(data.state);
+  updateTransferHostSelect(data.state);
   
   if (isHost) {
     hostLobbyControls.classList.remove('hidden');
@@ -500,11 +592,14 @@ socket.on('room-joined', (data) => {
 
 socket.on('player-joined', (data) => {
   updatePlayerLists(data.state);
+  updateTransferHostSelect(data.state);
   showToast(`${data.playerName} joined Team ${data.team}`, 'info');
 });
 
 socket.on('player-left', (data) => {
+  currentState = data.state;
   updatePlayerLists(data.state);
+  updateTransferHostSelect(data.state);
   
   // Check if we became host
   if (data.state.hostId === playerId && !isHost) {
@@ -520,18 +615,50 @@ socket.on('player-left', (data) => {
 });
 
 socket.on('player-disconnected', (data) => {
+  currentState = data.state;
   updatePlayerLists(data.state);
+  updateTransferHostSelect(data.state);
   showToast(`${data.playerName} disconnected`, 'info');
 });
 
 socket.on('player-reconnected', (data) => {
+  currentState = data.state;
   updatePlayerLists(data.state);
+  updateTransferHostSelect(data.state);
   showToast(`${data.playerName} reconnected`, 'success');
 });
 
 socket.on('teams-updated', (data) => {
   currentState = data.state;
   updatePlayerLists(data.state);
+  updateTransferHostSelect(data.state);
+});
+
+socket.on('host-changed', (data) => {
+  currentState = data.state;
+  isHost = data.newHostId === playerId;
+  updatePlayerLists(data.state);
+  updateTransferHostSelect(data.state);
+  
+  if (isHost) {
+    hostLobbyControls.classList.remove('hidden');
+    waitingMessage.classList.add('hidden');
+    showToast('You are now the host!', 'success');
+  } else {
+    hostLobbyControls.classList.add('hidden');
+    waitingMessage.classList.remove('hidden');
+    showToast(`${data.newHostName} is now the host`, 'info');
+  }
+});
+
+socket.on('settings-updated', (data) => {
+  currentState = data.state;
+  showToast(`Max skips set to ${data.maxSkipsPerRound === 999 ? 'unlimited' : data.maxSkipsPerRound}`, 'info');
+});
+
+socket.on('skip-denied', (data) => {
+  showToast(data.message, 'error');
+  updateSkipButton(0, data.maxSkips);
 });
 
 socket.on('reconnect-success', (data) => {
@@ -542,6 +669,7 @@ socket.on('reconnect-success', (data) => {
   if (data.state.gameState === 'lobby') {
     displayRoomCode.textContent = roomCode;
     updatePlayerLists(data.state);
+    updateTransferHostSelect(data.state);
     
     if (isHost) {
       hostLobbyControls.classList.remove('hidden');
@@ -582,6 +710,9 @@ socket.on('round-started', (data) => {
   // Reset current round words
   currentRoundWordsList = [];
   
+  // Reset skip button
+  updateSkipButton(data.state.skipsRemaining, data.state.maxSkipsPerRound);
+  
   updateGameUI(data.state);
   
   // Reset round correct count
@@ -610,6 +741,11 @@ socket.on('word-result', (data) => {
   // Add word to current round list and update display
   currentRoundWordsList.push({ word: data.word, result: data.result });
   updateCurrentRoundWords();
+  
+  // Update skip button if skip was used
+  if (data.skipsRemaining !== undefined) {
+    updateSkipButton(data.skipsRemaining, currentState?.maxSkipsPerRound || 2);
+  }
   
   // Count correct words this round
   const correctCount = currentRoundWordsList.filter(w => w.result === 'correct').length;

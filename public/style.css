@@ -440,9 +440,17 @@ body::before {
   text-align: center;
 }
 
-.difficulty-buttons {
+.difficulty-buttons,
+.language-buttons,
+.skips-buttons {
   display: flex;
   gap: 10px;
+}
+
+.language-selector,
+.skips-selector,
+.host-transfer {
+  margin-bottom: 20px;
 }
 
 .diff-btn {
@@ -468,6 +476,73 @@ body::before {
   border-color: var(--accent-primary);
   background: rgba(233, 69, 96, 0.2);
   color: var(--text-primary);
+}
+
+.lang-btn,
+.skip-limit-btn {
+  flex: 1;
+  padding: 12px;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 0.9rem;
+  border: 2px solid rgba(255,255,255,0.1);
+  border-radius: var(--border-radius-sm);
+  background: rgba(255,255,255,0.05);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.lang-btn:hover,
+.skip-limit-btn:hover {
+  border-color: rgba(255,255,255,0.2);
+  background: rgba(255,255,255,0.1);
+}
+
+.lang-btn.active {
+  border-color: var(--team-a);
+  background: rgba(0, 210, 211, 0.2);
+  color: var(--text-primary);
+}
+
+.skip-limit-btn.active {
+  border-color: var(--accent-gold);
+  background: rgba(254, 202, 87, 0.2);
+  color: var(--accent-gold);
+}
+
+.transfer-row {
+  display: flex;
+  gap: 10px;
+}
+
+.transfer-row .select-field {
+  flex: 1;
+}
+
+.transfer-row .btn {
+  width: auto;
+  white-space: nowrap;
+}
+
+.room-header {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.leave-room-container,
+.leave-game-container {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 20px;
+  margin-top: 10px;
+}
+
+.leave-btn {
+  width: auto;
+  padding: 10px 24px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
 
 .waiting-message {
@@ -1078,40 +1153,159 @@ body::before {
 /* Responsive */
 @media (max-width: 480px) {
   .container {
-    padding: 15px;
+    padding: 10px;
+  }
+  
+  .header {
+    padding: 20px 0;
   }
   
   .title {
-    font-size: 2.8rem;
+    font-size: 2.4rem;
   }
   
   .room-code {
-    font-size: 2.5rem;
-    letter-spacing: 8px;
+    font-size: 2rem;
+    letter-spacing: 6px;
+  }
+  
+  .room-code-display {
+    padding: 15px 25px;
   }
   
   .word-text {
-    font-size: 2.2rem;
+    font-size: 1.8rem;
+  }
+  
+  .word-card {
+    padding: 30px 20px;
   }
   
   .timer {
-    font-size: 2.5rem;
+    font-size: 2rem;
   }
   
   .score-value {
-    font-size: 2rem;
+    font-size: 1.8rem;
+  }
+  
+  .scoreboard {
+    padding: 15px 10px;
   }
   
   .teams-container {
     grid-template-columns: 1fr;
   }
   
-  .timer-buttons {
+  .timer-buttons,
+  .skips-buttons {
     flex-wrap: wrap;
   }
   
-  .timer-btn {
+  .timer-btn,
+  .skip-limit-btn {
+    flex: 1 1 30%;
+    padding: 10px 8px;
+    font-size: 0.85rem;
+  }
+  
+  .language-buttons {
+    flex-wrap: wrap;
+  }
+  
+  .lang-btn {
     flex: 1 1 45%;
+  }
+  
+  .difficulty-buttons {
+    flex-wrap: wrap;
+  }
+  
+  .diff-btn {
+    flex: 1 1 30%;
+    padding: 10px;
+    font-size: 0.85rem;
+  }
+  
+  .transfer-row {
+    flex-direction: column;
+  }
+  
+  .transfer-row .btn {
+    width: 100%;
+  }
+  
+  .btn {
+    padding: 14px 20px;
+    font-size: 1rem;
+  }
+  
+  .btn-small {
+    padding: 10px 16px;
+    font-size: 0.85rem;
+  }
+  
+  .actor-buttons {
+    flex-direction: column;
+    gap: 10px;
+  }
+  
+  .btn-correct,
+  .btn-skip {
+    flex: none;
+    width: 100%;
+  }
+  
+  .host-game-controls {
+    flex-direction: column;
+  }
+  
+  .host-game-controls .btn {
+    width: 100%;
+  }
+  
+  .final-scores {
+    flex-direction: column;
+    gap: 15px;
+  }
+  
+  .vs {
+    display: none;
+  }
+  
+  .final-value {
+    font-size: 3rem;
+  }
+  
+  .gameover-title {
+    font-size: 2.5rem;
+  }
+  
+  .input-field {
+    padding: 14px 16px;
+    font-size: 1rem;
+  }
+  
+  .input-code {
+    font-size: 1.2rem;
+    letter-spacing: 6px;
+  }
+  
+  .select-field {
+    padding: 12px 14px;
+    font-size: 0.95rem;
+  }
+  
+  .card {
+    padding: 20px;
+  }
+  
+  .host-controls {
+    padding: 20px;
+  }
+  
+  .setup-form {
+    padding: 20px;
   }
 }
 

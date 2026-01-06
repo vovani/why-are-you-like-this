@@ -1,4 +1,4 @@
-const { getShuffledDeck } = require('./cards');
+const { getShuffledDeck, getLanguages } = require('./cards');
 
 // Store all active rooms
 const rooms = new Map();
@@ -42,6 +42,7 @@ function createRoom(hostPlayerId, hostName) {
     },
     gameState: 'lobby', // lobby, playing, roundSetup, roundActive, gameOver
     difficulty: 'medium',
+    language: 'en',
     deck: [],
     currentCardIndex: 0,
     currentActorId: null,
@@ -50,7 +51,9 @@ function createRoom(hostPlayerId, hostName) {
     timerInterval: null,
     timerPaused: false,
     roundHistory: [],
-    currentRoundWords: []
+    currentRoundWords: [],
+    maxSkipsPerRound: 2,
+    skipsUsedThisRound: 0
   };
 
   // Add host as first player
@@ -128,6 +131,18 @@ function movePlayerToTeam(room, playerId, newTeam) {
   player.team = newTeam;
   
   return player;
+}
+
+function transferHost(room, newHostId) {
+  const newHost = room.players.get(newHostId);
+  if (!newHost) return null;
+  
+  room.hostId = newHostId;
+  return newHost;
+}
+
+function setMaxSkips(room, maxSkips) {
+  room.maxSkipsPerRound = maxSkips;
 }
 
 function getPlayerRoom(playerId) {
@@ -209,9 +224,10 @@ function handlePlayerReconnect(room, playerId, socketId) {
   return player;
 }
 
-function startGame(room, difficulty) {
+function startGame(room, difficulty, language = 'en') {
   room.difficulty = difficulty;
-  room.deck = getShuffledDeck(difficulty);
+  room.language = language;
+  room.deck = getShuffledDeck(difficulty, language);
   room.currentCardIndex = 0;
   room.gameState = 'roundSetup';
   room.scores = { A: 0, B: 0 };
@@ -226,6 +242,7 @@ function startRound(room, actorId, timerDuration, onTimerEnd) {
   room.gameState = 'roundActive';
   room.currentRoundWords = [];
   room.timerPaused = false;
+  room.skipsUsedThisRound = 0;
 
   // Start the timer
   room.timerInterval = setInterval(() => {
@@ -280,6 +297,12 @@ function markSkip(room) {
   const word = getCurrentWord(room);
   if (!word) return null;
 
+  // Check if skips are allowed
+  if (room.skipsUsedThisRound >= room.maxSkipsPerRound) {
+    return { error: 'noSkipsLeft', skipsUsed: room.skipsUsedThisRound, maxSkips: room.maxSkipsPerRound };
+  }
+
+  room.skipsUsedThisRound++;
   room.currentRoundWords.push({ word, result: 'skip' });
   room.currentCardIndex++;
 
@@ -287,7 +310,8 @@ function markSkip(room) {
     word,
     result: 'skip',
     scores: { ...room.scores },
-    nextWord: getCurrentWord(room)
+    nextWord: getCurrentWord(room),
+    skipsRemaining: room.maxSkipsPerRound - room.skipsUsedThisRound
   };
 }
 
@@ -361,13 +385,16 @@ function getRoomState(room, forPlayerId = null) {
     scores: room.scores,
     gameState: room.gameState,
     difficulty: room.difficulty,
+    language: room.language,
     currentActorId: room.currentActorId,
     currentActorName: room.currentActorId ? room.players.get(room.currentActorId)?.name : null,
     roundTimeRemaining: room.roundTimeRemaining,
     roundTimer: room.roundTimer,
     timerPaused: room.timerPaused,
     roundHistory: room.roundHistory,
-    cardsRemaining: room.deck.length - room.currentCardIndex
+    cardsRemaining: room.deck.length - room.currentCardIndex,
+    maxSkipsPerRound: room.maxSkipsPerRound,
+    skipsRemaining: room.maxSkipsPerRound - room.skipsUsedThisRound
   };
 
   // Only include current word if the requester is the actor
@@ -388,6 +415,8 @@ module.exports = {
   addPlayerToRoom,
   removePlayerFromRoom,
   movePlayerToTeam,
+  transferHost,
+  setMaxSkips,
   handlePlayerDisconnect,
   handlePlayerReconnect,
   startGame,

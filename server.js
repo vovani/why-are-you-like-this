@@ -160,8 +160,46 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Transfer host to another player
+  socket.on('transfer-host', ({ newHostId }) => {
+    const room = game.getRoom(currentRoomCode);
+    if (!room) return;
+
+    if (currentPlayerId !== room.hostId) {
+      socket.emit('error', { message: 'Only the host can transfer host privileges' });
+      return;
+    }
+
+    const newHost = game.transferHost(room, newHostId);
+    if (newHost) {
+      io.to(room.code).emit('host-changed', {
+        newHostId,
+        newHostName: newHost.name,
+        state: game.getRoomState(room)
+      });
+      console.log(`Host transferred to ${newHost.name} in room ${room.code}`);
+    }
+  });
+
+  // Set max skips per round
+  socket.on('set-max-skips', ({ maxSkips }) => {
+    const room = game.getRoom(currentRoomCode);
+    if (!room) return;
+
+    if (currentPlayerId !== room.hostId) {
+      socket.emit('error', { message: 'Only the host can change settings' });
+      return;
+    }
+
+    game.setMaxSkips(room, maxSkips);
+    io.to(room.code).emit('settings-updated', {
+      maxSkipsPerRound: maxSkips,
+      state: game.getRoomState(room)
+    });
+  });
+
   // Start the game
-  socket.on('start-game', ({ difficulty }) => {
+  socket.on('start-game', ({ difficulty, language }) => {
     const room = game.getRoom(currentRoomCode);
     if (!room) return;
 
@@ -170,13 +208,13 @@ io.on('connection', (socket) => {
       return;
     }
 
-    game.startGame(room, difficulty);
+    game.startGame(room, difficulty, language || 'en');
     
     io.to(room.code).emit('game-started', {
       state: game.getRoomState(room)
     });
 
-    console.log(`Game started in room ${room.code} with difficulty ${difficulty}`);
+    console.log(`Game started in room ${room.code} with difficulty ${difficulty}, language ${language || 'en'}`);
   });
 
   // Start a round (host selects actor and timer)
@@ -242,13 +280,24 @@ io.on('connection', (socket) => {
     const result = game.markSkip(room);
     if (!result) return;
 
+    // Check if skip was denied due to limit
+    if (result.error === 'noSkipsLeft') {
+      socket.emit('skip-denied', {
+        message: `No skips remaining (max ${result.maxSkips} per round)`,
+        skipsUsed: result.skipsUsed,
+        maxSkips: result.maxSkips
+      });
+      return;
+    }
+
     // Send update to all players
     for (const [pid, player] of room.players) {
       if (player.socketId) {
         io.to(player.socketId).emit('word-result', {
           ...result,
           nextWord: pid === currentPlayerId ? result.nextWord : undefined,
-          timeRemaining: room.roundTimeRemaining
+          timeRemaining: room.roundTimeRemaining,
+          skipsRemaining: result.skipsRemaining
         });
       }
     }
