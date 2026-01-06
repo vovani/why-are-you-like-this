@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Why Are You Like This?</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1 class="title">Why Are You<br><span class="title-accent">Like This?</span></h1>
+      <p class="subtitle">The party game that gets weird</p>
+    </header>
+
+    <!-- Landing Screen -->
+    <div id="landing-screen" class="screen active">
+      <div class="card">
+        <input type="text" id="player-name" placeholder="Your Name" maxlength="20" class="input-field">
+        
+        <div class="button-group">
+          <button id="create-btn" class="btn btn-primary">
+            <span class="btn-icon">🎮</span>
+            Create Game
+          </button>
+          
+          <div class="divider">
+            <span>or</span>
+          </div>
+          
+          <input type="text" id="room-code" placeholder="Room Code" maxlength="4" class="input-field input-code">
+          <button id="join-btn" class="btn btn-secondary">
+            <span class="btn-icon">🚀</span>
+            Join Game
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Lobby Screen -->
+    <div id="lobby-screen" class="screen">
+      <div class="room-header">
+        <div class="room-code-display">
+          <span class="room-label">Room Code</span>
+          <span id="display-room-code" class="room-code">----</span>
+        </div>
+      </div>
+
+      <div class="teams-container">
+        <div class="team team-a" id="team-a-drop" data-team="A">
+          <h3 class="team-title">Team A</h3>
+          <ul id="team-a-list" class="player-list"></ul>
+        </div>
+        <div class="team team-b" id="team-b-drop" data-team="B">
+          <h3 class="team-title">Team B</h3>
+          <ul id="team-b-list" class="player-list"></ul>
+        </div>
+      </div>
+      <p id="drag-hint" class="drag-hint hidden">Drag players to rearrange teams</p>
+
+      <div id="host-lobby-controls" class="host-controls hidden">
+        <div class="difficulty-selector">
+          <label class="selector-label">Difficulty</label>
+          <div class="difficulty-buttons">
+            <button class="diff-btn active" data-difficulty="easy">Easy</button>
+            <button class="diff-btn" data-difficulty="medium">Medium</button>
+            <button class="diff-btn" data-difficulty="hard">Hard</button>
+          </div>
+        </div>
+        <button id="start-game-btn" class="btn btn-primary btn-large">
+          Start Game
+        </button>
+      </div>
+
+      <div id="waiting-message" class="waiting-message">
+        Waiting for host to start...
+      </div>
+    </div>
+
+    <!-- Game Screen -->
+    <div id="game-screen" class="screen">
+      <!-- Score Display -->
+      <div class="scoreboard">
+        <div class="score team-a-score">
+          <span class="score-label">Team A</span>
+          <span id="score-a" class="score-value">0</span>
+        </div>
+        <div class="timer-display">
+          <div id="timer" class="timer">60</div>
+          <div id="timer-label" class="timer-label">seconds</div>
+        </div>
+        <div class="score team-b-score">
+          <span class="score-label">Team B</span>
+          <span id="score-b" class="score-value">0</span>
+        </div>
+      </div>
+
+      <!-- Round Setup (Host Only) -->
+      <div id="round-setup" class="game-section hidden">
+        <h2 class="section-title">Set Up Round</h2>
+        <div class="setup-form">
+          <div class="form-group">
+            <label class="form-label">Choose Actor</label>
+            <select id="actor-select" class="select-field">
+              <option value="">Select a player...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Timer Duration</label>
+            <div class="timer-buttons">
+              <button class="timer-btn" data-time="30">30s</button>
+              <button class="timer-btn active" data-time="60">60s</button>
+              <button class="timer-btn" data-time="90">90s</button>
+              <button class="timer-btn" data-time="120">120s</button>
+            </div>
+          </div>
+          <button id="start-round-btn" class="btn btn-primary btn-large">
+            Start Round
+          </button>
+        </div>
+        <p class="cards-remaining">Cards remaining: <span id="cards-remaining">50</span></p>
+      </div>
+
+      <!-- Waiting for Round Setup (Non-Host) -->
+      <div id="waiting-setup" class="game-section hidden">
+        <div class="waiting-card">
+          <div class="loading-dots">
+            <span></span><span></span><span></span>
+          </div>
+          <p>Waiting for host to set up the round...</p>
+        </div>
+      </div>
+
+      <!-- Actor View -->
+      <div id="actor-view" class="game-section hidden">
+        <div class="word-card">
+          <span class="word-label">Your Word</span>
+          <span id="current-word" class="word-text">Loading...</span>
+        </div>
+        <div class="actor-buttons">
+          <button id="skip-btn" class="btn btn-skip">
+            Skip
+          </button>
+          <button id="correct-btn" class="btn btn-correct">
+            Correct!
+          </button>
+        </div>
+        <div class="round-progress">
+          <span id="round-correct">0</span> correct this round
+        </div>
+      </div>
+
+      <!-- Guesser View -->
+      <div id="guesser-view" class="game-section hidden">
+        <div class="guessing-card">
+          <div class="actor-indicator">
+            <span id="current-actor-name">Player</span>
+            <span class="is-acting">is acting!</span>
+          </div>
+          <div class="guess-animation">
+            <span>🎭</span>
+          </div>
+          <p class="guess-hint">Watch and guess the word!</p>
+        </div>
+        <div class="round-progress">
+          <span id="guesser-round-correct">0</span> correct this round
+        </div>
+      </div>
+
+      <!-- Current Round Progress -->
+      <div id="current-round-section" class="history-section current-round hidden">
+        <h3 class="history-title">Current Round</h3>
+        <div id="current-round-words" class="current-words"></div>
+      </div>
+
+      <!-- Round History -->
+      <div class="history-section">
+        <h3 class="history-title">Round History</h3>
+        <div id="round-history" class="history-list">
+          <p class="no-history">No rounds played yet</p>
+        </div>
+      </div>
+
+      <!-- Host Game Controls -->
+      <div id="host-game-controls" class="host-game-controls hidden">
+        <button id="end-round-btn" class="btn btn-secondary btn-small hidden">
+          End Round Early
+        </button>
+        <button id="end-game-btn" class="btn btn-danger btn-small">
+          End Game
+        </button>
+      </div>
+    </div>
+
+    <!-- Game Over Screen -->
+    <div id="gameover-screen" class="screen">
+      <div class="gameover-card">
+        <h2 class="gameover-title">Game Over!</h2>
+        <div class="final-scores">
+          <div class="final-score team-a-final">
+            <span class="final-label">Team A</span>
+            <span id="final-score-a" class="final-value">0</span>
+          </div>
+          <div class="vs">VS</div>
+          <div class="final-score team-b-final">
+            <span class="final-label">Team B</span>
+            <span id="final-score-b" class="final-value">0</span>
+          </div>
+        </div>
+        <div id="winner-announcement" class="winner-announcement"></div>
+        <button id="play-again-btn" class="btn btn-primary btn-large hidden">
+          Play Again
+        </button>
+        <button id="back-to-lobby-btn" class="btn btn-secondary">
+          Back to Lobby
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>
+

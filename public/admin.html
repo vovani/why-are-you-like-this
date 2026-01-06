@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin - Why Are You Like This?</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    .admin-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 30px;
+    }
+    
+    .admin-title {
+      font-family: 'Bangers', cursive;
+      font-size: 2rem;
+      color: var(--accent-gold);
+    }
+    
+    .refresh-btn {
+      width: auto;
+      padding: 10px 20px;
+    }
+    
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 15px;
+      margin-bottom: 30px;
+    }
+    
+    .stat-card {
+      background: linear-gradient(145deg, var(--bg-card), var(--bg-secondary));
+      border-radius: var(--border-radius);
+      padding: 20px;
+      text-align: center;
+      box-shadow: var(--shadow-sm);
+    }
+    
+    .stat-value {
+      font-family: 'Bangers', cursive;
+      font-size: 2.5rem;
+      color: var(--accent-primary);
+    }
+    
+    .stat-label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    
+    .rooms-list {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    
+    .room-card {
+      background: linear-gradient(145deg, var(--bg-card), var(--bg-secondary));
+      border-radius: var(--border-radius);
+      padding: 20px;
+      box-shadow: var(--shadow-sm);
+    }
+    
+    .room-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+      padding-bottom: 15px;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    
+    .room-code-badge {
+      font-family: 'Bangers', cursive;
+      font-size: 1.5rem;
+      color: var(--accent-gold);
+      letter-spacing: 3px;
+    }
+    
+    .room-state {
+      font-size: 0.8rem;
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    
+    .room-state.lobby {
+      background: rgba(0, 210, 211, 0.2);
+      color: var(--team-a);
+    }
+    
+    .room-state.playing, .room-state.roundSetup, .room-state.roundActive {
+      background: rgba(38, 222, 129, 0.2);
+      color: var(--success);
+    }
+    
+    .room-state.gameOver {
+      background: rgba(255,255,255,0.1);
+      color: var(--text-muted);
+    }
+    
+    .room-info {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 15px;
+      margin-bottom: 15px;
+    }
+    
+    .room-info-item {
+      font-size: 0.9rem;
+    }
+    
+    .room-info-label {
+      color: var(--text-muted);
+      margin-right: 5px;
+    }
+    
+    .room-players {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    
+    .player-badge {
+      font-size: 0.8rem;
+      padding: 4px 10px;
+      border-radius: 15px;
+      background: rgba(255,255,255,0.08);
+    }
+    
+    .player-badge.team-a {
+      border-left: 3px solid var(--team-a);
+    }
+    
+    .player-badge.team-b {
+      border-left: 3px solid var(--team-b);
+    }
+    
+    .player-badge.disconnected {
+      opacity: 0.5;
+    }
+    
+    .player-badge.host::before {
+      content: '👑 ';
+    }
+    
+    .room-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+    }
+    
+    .room-actions .btn {
+      width: auto;
+      flex: 1;
+      padding: 10px 15px;
+      font-size: 0.85rem;
+    }
+    
+    .no-rooms {
+      text-align: center;
+      color: var(--text-muted);
+      padding: 50px 20px;
+      background: linear-gradient(145deg, var(--bg-card), var(--bg-secondary));
+      border-radius: var(--border-radius);
+    }
+    
+    .back-link {
+      display: inline-block;
+      color: var(--text-muted);
+      text-decoration: none;
+      margin-bottom: 20px;
+      font-size: 0.9rem;
+    }
+    
+    .back-link:hover {
+      color: var(--text-primary);
+    }
+    
+    @media (max-width: 480px) {
+      .stats-grid {
+        grid-template-columns: 1fr;
+      }
+      
+      .room-info {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/" class="back-link">← Back to Game</a>
+    
+    <div class="admin-header">
+      <h1 class="admin-title">Admin Dashboard</h1>
+      <button id="refresh-btn" class="btn btn-secondary refresh-btn">
+        Refresh
+      </button>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div id="total-rooms" class="stat-value">0</div>
+        <div class="stat-label">Active Rooms</div>
+      </div>
+      <div class="stat-card">
+        <div id="total-players" class="stat-value">0</div>
+        <div class="stat-label">Total Players</div>
+      </div>
+      <div class="stat-card">
+        <div id="games-in-progress" class="stat-value">0</div>
+        <div class="stat-label">Games In Progress</div>
+      </div>
+    </div>
+
+    <h2 style="margin-bottom: 15px; color: var(--text-secondary);">Active Rooms</h2>
+    
+    <div id="rooms-container" class="rooms-list">
+      <div class="no-rooms">No active rooms</div>
+    </div>
+  </div>
+
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // Auto-detect base path for subpath hosting
+    const basePath = window.location.pathname.includes('/why_are_you_like_this') 
+      ? '/why_are_you_like_this' 
+      : '';
+    const socket = io({
+      path: basePath + '/socket.io'
+    });
+    
+    const totalRooms = document.getElementById('total-rooms');
+    const totalPlayers = document.getElementById('total-players');
+    const gamesInProgress = document.getElementById('games-in-progress');
+    const roomsContainer = document.getElementById('rooms-container');
+    const refreshBtn = document.getElementById('refresh-btn');
+    const toastContainer = document.getElementById('toast-container');
+    
+    function showToast(message, type = 'info') {
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+      toast.textContent = message;
+      toastContainer.appendChild(toast);
+      setTimeout(() => toast.remove(), 3000);
+    }
+    
+    function getStateLabel(state) {
+      const labels = {
+        lobby: 'Lobby',
+        playing: 'Playing',
+        roundSetup: 'Round Setup',
+        roundActive: 'Round Active',
+        gameOver: 'Game Over'
+      };
+      return labels[state] || state;
+    }
+    
+    function renderRooms(data) {
+      // Update stats
+      totalRooms.textContent = data.stats.totalRooms;
+      totalPlayers.textContent = data.stats.totalPlayers;
+      gamesInProgress.textContent = data.stats.gamesInProgress;
+      
+      // Render rooms
+      if (data.rooms.length === 0) {
+        roomsContainer.innerHTML = '<div class="no-rooms">No active rooms</div>';
+        return;
+      }
+      
+      roomsContainer.innerHTML = data.rooms.map(room => `
+        <div class="room-card" data-room="${room.code}">
+          <div class="room-header">
+            <span class="room-code-badge">${room.code}</span>
+            <span class="room-state ${room.gameState}">${getStateLabel(room.gameState)}</span>
+          </div>
+          
+          <div class="room-info">
+            <div class="room-info-item">
+              <span class="room-info-label">Difficulty:</span>
+              <span>${room.difficulty}</span>
+            </div>
+            <div class="room-info-item">
+              <span class="room-info-label">Cards Left:</span>
+              <span>${room.cardsRemaining}</span>
+            </div>
+            <div class="room-info-item">
+              <span class="room-info-label">Score:</span>
+              <span style="color: var(--team-a)">A: ${room.scores.A}</span> / 
+              <span style="color: var(--team-b)">B: ${room.scores.B}</span>
+            </div>
+            <div class="room-info-item">
+              <span class="room-info-label">Players:</span>
+              <span>${room.playerCount} (${room.connectedCount} online)</span>
+            </div>
+          </div>
+          
+          <div class="room-players">
+            ${room.players.map(p => `
+              <span class="player-badge team-${p.team.toLowerCase()} ${p.connected ? '' : 'disconnected'} ${p.isHost ? 'host' : ''}">
+                ${p.name}${!p.connected ? ' (offline)' : ''}
+              </span>
+            `).join('')}
+          </div>
+          
+          <div class="room-actions">
+            <button class="btn btn-danger btn-small" onclick="closeRoom('${room.code}')">
+              Close Room
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+    
+    function fetchRooms() {
+      socket.emit('admin-get-rooms');
+    }
+    
+    function closeRoom(roomCode) {
+      if (confirm(`Are you sure you want to close room ${roomCode}? All players will be disconnected.`)) {
+        socket.emit('admin-close-room', { roomCode });
+      }
+    }
+    
+    socket.on('admin-rooms-data', (data) => {
+      renderRooms(data);
+    });
+    
+    socket.on('admin-room-closed', (data) => {
+      showToast(`Room ${data.roomCode} closed`, 'success');
+      fetchRooms();
+    });
+    
+    socket.on('error', (data) => {
+      showToast(data.message, 'error');
+    });
+    
+    refreshBtn.addEventListener('click', fetchRooms);
+    
+    // Initial fetch
+    fetchRooms();
+    
+    // Auto-refresh every 5 seconds
+    setInterval(fetchRooms, 5000);
+  </script>
+</body>
+</html>
+

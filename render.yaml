@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: why-are-you-like-this
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+
