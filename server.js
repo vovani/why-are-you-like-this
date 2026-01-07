@@ -2,7 +2,14 @@ const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const crypto = require('crypto');
 const game = require('./game');
+
+// Admin password from environment variable (default for development)
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+
+// Store valid admin tokens (in production, use Redis or similar)
+const adminTokens = new Set();
 
 const app = express();
 const httpServer = createServer(app);
@@ -12,8 +19,48 @@ const io = new Server(httpServer, {
   }
 });
 
-// Serve static files
-app.use(express.static(path.join(__dirname, 'public')));
+// Parse JSON bodies
+app.use(express.json());
+
+// Serve static files (except admin.html which requires auth)
+app.use(express.static(path.join(__dirname, 'public'), {
+  index: 'index.html'
+}));
+
+// Admin login endpoint
+app.post('/api/admin/login', (req, res) => {
+  const { password } = req.body;
+  
+  if (password === ADMIN_PASSWORD) {
+    const token = crypto.randomBytes(32).toString('hex');
+    adminTokens.add(token);
+    
+    // Token expires in 24 hours
+    setTimeout(() => adminTokens.delete(token), 24 * 60 * 60 * 1000);
+    
+    res.json({ success: true, token });
+  } else {
+    res.status(401).json({ success: false, message: 'Invalid password' });
+  }
+});
+
+// Verify admin token endpoint
+app.post('/api/admin/verify', (req, res) => {
+  const { token } = req.body;
+  
+  if (adminTokens.has(token)) {
+    res.json({ valid: true });
+  } else {
+    res.status(401).json({ valid: false });
+  }
+});
+
+// Admin logout endpoint
+app.post('/api/admin/logout', (req, res) => {
+  const { token } = req.body;
+  adminTokens.delete(token);
+  res.json({ success: true });
+});
 
 // Socket.io connection handling
 io.on('connection', (socket) => {
@@ -394,8 +441,13 @@ io.on('connection', (socket) => {
     currentRoomCode = null;
   });
 
-  // Admin: Get all rooms
-  socket.on('admin-get-rooms', () => {
+  // Admin: Get all rooms (requires valid token)
+  socket.on('admin-get-rooms', ({ token }) => {
+    if (!token || !adminTokens.has(token)) {
+      socket.emit('admin-auth-required');
+      return;
+    }
+    
     const allRooms = game.getAllRooms();
     const roomsData = [];
     let totalPlayers = 0;
@@ -443,8 +495,13 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Admin: Close a room
-  socket.on('admin-close-room', ({ roomCode }) => {
+  // Admin: Close a room (requires valid token)
+  socket.on('admin-close-room', ({ roomCode, token }) => {
+    if (!token || !adminTokens.has(token)) {
+      socket.emit('admin-auth-required');
+      return;
+    }
+    
     const room = game.getRoom(roomCode);
     if (!room) {
       socket.emit('error', { message: 'Room not found' });

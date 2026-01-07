@@ -17,11 +17,61 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
   <style>
+    .login-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 80vh;
+    }
+    
+    .login-card {
+      background: linear-gradient(145deg, var(--bg-card), var(--bg-secondary));
+      border-radius: var(--border-radius);
+      padding: 40px;
+      box-shadow: var(--shadow);
+      max-width: 400px;
+      width: 100%;
+      text-align: center;
+    }
+    
+    .login-title {
+      font-family: 'Bangers', cursive;
+      font-size: 2rem;
+      color: var(--accent-gold);
+      margin-bottom: 10px;
+    }
+    
+    .login-subtitle {
+      color: var(--text-muted);
+      margin-bottom: 30px;
+    }
+    
+    .login-form {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    
+    .admin-screen {
+      display: none;
+    }
+    
+    .admin-screen.active {
+      display: block;
+    }
+    
+    .login-screen.hidden {
+      display: none;
+    }
+    
     .admin-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
       margin-bottom: 30px;
+      flex-wrap: wrap;
+      gap: 10px;
     }
     
     .admin-title {
@@ -30,7 +80,12 @@
       color: var(--accent-gold);
     }
     
-    .refresh-btn {
+    .admin-actions {
+      display: flex;
+      gap: 10px;
+    }
+    
+    .refresh-btn, .logout-btn {
       width: auto;
       padding: 10px 20px;
     }
@@ -195,6 +250,12 @@
       color: var(--text-primary);
     }
     
+    .error-message {
+      color: var(--danger);
+      font-size: 0.9rem;
+      margin-top: 10px;
+    }
+    
     @media (max-width: 480px) {
       .stats-grid {
         grid-template-columns: 1fr;
@@ -203,39 +264,70 @@
       .room-info {
         grid-template-columns: 1fr;
       }
+      
+      .admin-header {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      
+      .admin-actions {
+        justify-content: center;
+      }
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <a href="/" class="back-link">← Back to Game</a>
-    
-    <div class="admin-header">
-      <h1 class="admin-title">Admin Dashboard</h1>
-      <button id="refresh-btn" class="btn btn-secondary refresh-btn">
-        Refresh
-      </button>
-    </div>
-
-    <div class="stats-grid">
-      <div class="stat-card">
-        <div id="total-rooms" class="stat-value">0</div>
-        <div class="stat-label">Active Rooms</div>
-      </div>
-      <div class="stat-card">
-        <div id="total-players" class="stat-value">0</div>
-        <div class="stat-label">Total Players</div>
-      </div>
-      <div class="stat-card">
-        <div id="games-in-progress" class="stat-value">0</div>
-        <div class="stat-label">Games In Progress</div>
+    <!-- Login Screen -->
+    <div id="login-screen" class="login-screen">
+      <div class="login-card">
+        <h1 class="login-title">Admin Login</h1>
+        <p class="login-subtitle">Enter password to access admin dashboard</p>
+        <form id="login-form" class="login-form">
+          <input type="password" id="password-input" class="input-field" placeholder="Password" required>
+          <button type="submit" class="btn btn-primary">Login</button>
+          <p id="login-error" class="error-message" style="display: none;"></p>
+        </form>
+        <a href="./" class="back-link" style="margin-top: 20px;">← Back to Game</a>
       </div>
     </div>
 
-    <h2 style="margin-bottom: 15px; color: var(--text-secondary);">Active Rooms</h2>
-    
-    <div id="rooms-container" class="rooms-list">
-      <div class="no-rooms">No active rooms</div>
+    <!-- Admin Dashboard -->
+    <div id="admin-screen" class="admin-screen">
+      <a href="./" class="back-link">← Back to Game</a>
+      
+      <div class="admin-header">
+        <h1 class="admin-title">Admin Dashboard</h1>
+        <div class="admin-actions">
+          <button id="refresh-btn" class="btn btn-secondary refresh-btn">
+            Refresh
+          </button>
+          <button id="logout-btn" class="btn btn-secondary logout-btn">
+            Logout
+          </button>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div id="total-rooms" class="stat-value">0</div>
+          <div class="stat-label">Active Rooms</div>
+        </div>
+        <div class="stat-card">
+          <div id="total-players" class="stat-value">0</div>
+          <div class="stat-label">Total Players</div>
+        </div>
+        <div class="stat-card">
+          <div id="games-in-progress" class="stat-value">0</div>
+          <div class="stat-label">Games In Progress</div>
+        </div>
+      </div>
+
+      <h2 style="margin-bottom: 15px; color: var(--text-secondary);">Active Rooms</h2>
+      
+      <div id="rooms-container" class="rooms-list">
+        <div class="no-rooms">No active rooms</div>
+      </div>
     </div>
   </div>
 
@@ -251,12 +343,22 @@
       path: basePath + '/socket.io'
     });
     
+    // DOM Elements
+    const loginScreen = document.getElementById('login-screen');
+    const adminScreen = document.getElementById('admin-screen');
+    const loginForm = document.getElementById('login-form');
+    const passwordInput = document.getElementById('password-input');
+    const loginError = document.getElementById('login-error');
     const totalRooms = document.getElementById('total-rooms');
     const totalPlayers = document.getElementById('total-players');
     const gamesInProgress = document.getElementById('games-in-progress');
     const roomsContainer = document.getElementById('rooms-container');
     const refreshBtn = document.getElementById('refresh-btn');
+    const logoutBtn = document.getElementById('logout-btn');
     const toastContainer = document.getElementById('toast-container');
+    
+    // Auth state
+    let adminToken = localStorage.getItem('adminToken');
     
     function showToast(message, type = 'info') {
       const toast = document.createElement('div');
@@ -264,6 +366,87 @@
       toast.textContent = message;
       toastContainer.appendChild(toast);
       setTimeout(() => toast.remove(), 3000);
+    }
+    
+    function showLogin() {
+      loginScreen.classList.remove('hidden');
+      adminScreen.classList.remove('active');
+    }
+    
+    function showAdmin() {
+      loginScreen.classList.add('hidden');
+      adminScreen.classList.add('active');
+      fetchRooms();
+    }
+    
+    async function login(password) {
+      try {
+        const response = await fetch(basePath + '/api/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          adminToken = data.token;
+          localStorage.setItem('adminToken', adminToken);
+          loginError.style.display = 'none';
+          showAdmin();
+          showToast('Logged in successfully', 'success');
+        } else {
+          loginError.textContent = data.message || 'Invalid password';
+          loginError.style.display = 'block';
+        }
+      } catch (err) {
+        loginError.textContent = 'Connection error. Please try again.';
+        loginError.style.display = 'block';
+      }
+    }
+    
+    async function verifyToken() {
+      if (!adminToken) {
+        showLogin();
+        return;
+      }
+      
+      try {
+        const response = await fetch(basePath + '/api/admin/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: adminToken })
+        });
+        
+        const data = await response.json();
+        
+        if (data.valid) {
+          showAdmin();
+        } else {
+          localStorage.removeItem('adminToken');
+          adminToken = null;
+          showLogin();
+        }
+      } catch (err) {
+        showLogin();
+      }
+    }
+    
+    async function logout() {
+      try {
+        await fetch(basePath + '/api/admin/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: adminToken })
+        });
+      } catch (err) {
+        // Ignore errors
+      }
+      
+      localStorage.removeItem('adminToken');
+      adminToken = null;
+      showLogin();
+      showToast('Logged out', 'info');
     }
     
     function getStateLabel(state) {
@@ -278,12 +461,10 @@
     }
     
     function renderRooms(data) {
-      // Update stats
       totalRooms.textContent = data.stats.totalRooms;
       totalPlayers.textContent = data.stats.totalPlayers;
       gamesInProgress.textContent = data.stats.gamesInProgress;
       
-      // Render rooms
       if (data.rooms.length === 0) {
         roomsContainer.innerHTML = '<div class="no-rooms">No active rooms</div>';
         return;
@@ -334,15 +515,16 @@
     }
     
     function fetchRooms() {
-      socket.emit('admin-get-rooms');
+      socket.emit('admin-get-rooms', { token: adminToken });
     }
     
     function closeRoom(roomCode) {
       if (confirm(`Are you sure you want to close room ${roomCode}? All players will be disconnected.`)) {
-        socket.emit('admin-close-room', { roomCode });
+        socket.emit('admin-close-room', { roomCode, token: adminToken });
       }
     }
     
+    // Socket events
     socket.on('admin-rooms-data', (data) => {
       renderRooms(data);
     });
@@ -352,18 +534,35 @@
       fetchRooms();
     });
     
+    socket.on('admin-auth-required', () => {
+      localStorage.removeItem('adminToken');
+      adminToken = null;
+      showLogin();
+      showToast('Session expired. Please login again.', 'error');
+    });
+    
     socket.on('error', (data) => {
       showToast(data.message, 'error');
     });
     
+    // Event listeners
+    loginForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      login(passwordInput.value);
+    });
+    
     refreshBtn.addEventListener('click', fetchRooms);
+    logoutBtn.addEventListener('click', logout);
     
-    // Initial fetch
-    fetchRooms();
+    // Auto-refresh every 5 seconds when logged in
+    setInterval(() => {
+      if (adminToken) {
+        fetchRooms();
+      }
+    }, 5000);
     
-    // Auto-refresh every 5 seconds
-    setInterval(fetchRooms, 5000);
+    // Initial check
+    verifyToken();
   </script>
 </body>
 </html>
-
