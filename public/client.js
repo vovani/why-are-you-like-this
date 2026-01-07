@@ -66,6 +66,7 @@ const cardsRemaining = document.getElementById('cards-remaining');
 const currentWord = document.getElementById('current-word');
 const correctBtn = document.getElementById('correct-btn');
 const skipBtn = document.getElementById('skip-btn');
+const removeWordBtn = document.getElementById('remove-word-btn');
 const roundCorrect = document.getElementById('round-correct');
 const guesserRoundCorrect = document.getElementById('guesser-round-correct');
 const currentActorName = document.getElementById('current-actor-name');
@@ -529,6 +530,12 @@ skipBtn.addEventListener('click', () => {
   socket.emit('mark-skip');
 });
 
+removeWordBtn.addEventListener('click', () => {
+  if (confirm('Remove this word permanently? It won\'t appear in future games.')) {
+    socket.emit('remove-word');
+  }
+});
+
 endRoundBtn.addEventListener('click', () => {
   socket.emit('end-round');
 });
@@ -659,6 +666,22 @@ socket.on('settings-updated', (data) => {
 socket.on('skip-denied', (data) => {
   showToast(data.message, 'error');
   updateSkipButton(0, data.maxSkips);
+});
+
+socket.on('word-removed', (data) => {
+  showToast(`"${data.word}" removed from deck`, 'info');
+  
+  // Update word for actor
+  if (data.nextWord !== undefined) {
+    if (data.nextWord === null) {
+      currentWord.textContent = 'No more cards!';
+      correctBtn.disabled = true;
+      skipBtn.disabled = true;
+      removeWordBtn.disabled = true;
+    } else {
+      currentWord.textContent = data.nextWord;
+    }
+  }
 });
 
 socket.on('reconnect-success', (data) => {

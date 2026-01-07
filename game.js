@@ -224,10 +224,10 @@ function handlePlayerReconnect(room, playerId, socketId) {
   return player;
 }
 
-function startGame(room, difficulty, language = 'en') {
+function startGame(room, difficulty, language = 'en', bannedWords = []) {
   room.difficulty = difficulty;
   room.language = language;
-  room.deck = getShuffledDeck(difficulty, language);
+  room.deck = getShuffledDeck(difficulty, language, bannedWords);
   room.currentCardIndex = 0;
   room.gameState = 'roundSetup';
   room.scores = { A: 0, B: 0 };
@@ -312,6 +312,20 @@ function markSkip(room) {
     scores: { ...room.scores },
     nextWord: getCurrentWord(room),
     skipsRemaining: room.maxSkipsPerRound - room.skipsUsedThisRound
+  };
+}
+
+function removeCurrentWord(room) {
+  const word = getCurrentWord(room);
+  if (!word) return null;
+
+  // Remove from deck (don't add to round words, don't count as anything)
+  room.deck.splice(room.currentCardIndex, 1);
+  // Don't increment currentCardIndex since we removed the current word
+
+  return {
+    word,
+    nextWord: getCurrentWord(room)
   };
 }
 
@@ -426,6 +440,7 @@ module.exports = {
   getCurrentWord,
   markCorrect,
   markSkip,
+  removeCurrentWord,
   endRound,
   endGame,
   resetGame,

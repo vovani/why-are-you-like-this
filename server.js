@@ -2,8 +2,34 @@ const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const game = require('./game');
+
+// Banned words file path
+const BANNED_WORDS_FILE = path.join(__dirname, 'bannedWords.json');
+
+// Load banned words
+function loadBannedWords() {
+  try {
+    const data = fs.readFileSync(BANNED_WORDS_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (err) {
+    return { en: [], he: [] };
+  }
+}
+
+// Save banned words
+function saveBannedWords(bannedWords) {
+  try {
+    fs.writeFileSync(BANNED_WORDS_FILE, JSON.stringify(bannedWords, null, 2));
+  } catch (err) {
+    console.error('Failed to save banned words:', err);
+  }
+}
+
+// Initialize banned words
+let bannedWords = loadBannedWords();
 
 // Admin password from environment variable (default for development)
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
@@ -255,13 +281,15 @@ io.on('connection', (socket) => {
       return;
     }
 
-    game.startGame(room, difficulty, language || 'en');
+    const lang = language || 'en';
+    const langBannedWords = bannedWords[lang] || [];
+    game.startGame(room, difficulty, lang, langBannedWords);
     
     io.to(room.code).emit('game-started', {
       state: game.getRoomState(room)
     });
 
-    console.log(`Game started in room ${room.code} with difficulty ${difficulty}, language ${language || 'en'}`);
+    console.log(`Game started in room ${room.code} with difficulty ${difficulty}, language ${lang} (${langBannedWords.length} words banned)`);
   });
 
   // Start a round (host selects actor and timer)
@@ -312,6 +340,35 @@ io.on('connection', (socket) => {
       if (player.socketId) {
         io.to(player.socketId).emit('word-result', {
           ...result,
+          nextWord: pid === currentPlayerId ? result.nextWord : undefined,
+          timeRemaining: room.roundTimeRemaining
+        });
+      }
+    }
+  });
+
+  // Actor removes word (ban it permanently)
+  socket.on('remove-word', () => {
+    const room = game.getRoom(currentRoomCode);
+    if (!room || room.currentActorId !== currentPlayerId) return;
+
+    const result = game.removeCurrentWord(room);
+    if (!result) return;
+
+    // Add word to banned list
+    const lang = room.language || 'en';
+    if (!bannedWords[lang]) bannedWords[lang] = [];
+    if (!bannedWords[lang].includes(result.word)) {
+      bannedWords[lang].push(result.word);
+      saveBannedWords(bannedWords);
+      console.log(`Word "${result.word}" banned from ${lang} deck`);
+    }
+
+    // Send update to all players
+    for (const [pid, player] of room.players) {
+      if (player.socketId) {
+        io.to(player.socketId).emit('word-removed', {
+          word: result.word,
           nextWord: pid === currentPlayerId ? result.nextWord : undefined,
           timeRemaining: room.roundTimeRemaining
         });

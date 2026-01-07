@@ -229,6 +229,25 @@ body::before {
   background: rgba(255,255,255,0.15);
 }
 
+.btn-remove {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px dashed rgba(255,255,255,0.2);
+  font-size: 0.8rem;
+  padding: 8px 16px;
+}
+
+.btn-remove:hover:not(:disabled) {
+  background: rgba(252, 92, 101, 0.1);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.remove-word-container {
+  margin-top: 10px;
+  text-align: center;
+}
+
 .btn-danger {
   background: linear-gradient(135deg, var(--danger), #eb3b5a);
   color: white;

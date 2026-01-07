@@ -209,9 +209,11 @@ const cards = {
 };
 
 // Get shuffled cards for a specific difficulty and language
-function getShuffledDeck(difficulty, language = 'en') {
+function getShuffledDeck(difficulty, language = 'en', bannedWords = []) {
   const lang = cards[language] || cards.en;
-  const deck = [...lang[difficulty]];
+  // Filter out banned words
+  const deck = [...lang[difficulty]].filter(word => !bannedWords.includes(word));
+  // Shuffle
   for (let i = deck.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [deck[i], deck[j]] = [deck[j], deck[i]];
