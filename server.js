@@ -464,6 +464,26 @@ io.on('connection', (socket) => {
     console.log(`Game reset in ${room.code}`);
   });
 
+  // Pause timer (actor only)
+  socket.on('pause-timer', () => {
+    const room = game.getRoom(currentRoomCode);
+    if (!room || room.currentActorId !== currentPlayerId) return;
+    
+    game.pauseTimer(room);
+    io.to(room.code).emit('timer-paused');
+  });
+
+  // Resume timer (actor only)
+  socket.on('resume-timer', () => {
+    const room = game.getRoom(currentRoomCode);
+    if (!room || room.currentActorId !== currentPlayerId) return;
+    
+    game.resumeTimer(room);
+    io.to(room.code).emit('timer-resumed', {
+      timeRemaining: room.roundTimeRemaining
+    });
+  });
+
   // Request timer sync
   socket.on('sync-timer', () => {
     const room = game.getRoom(currentRoomCode);

@@ -631,6 +631,11 @@ body::before {
   animation: pulse 0.3s ease-in-out infinite;
 }
 
+.timer.paused {
+  color: var(--text-muted);
+  animation: none;
+}
+
 @keyframes pulse {
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.1); }

@@ -531,9 +531,15 @@ skipBtn.addEventListener('click', () => {
 });
 
 removeWordBtn.addEventListener('click', () => {
+  // Pause timer while popup is shown
+  socket.emit('pause-timer');
+  
   if (confirm('Remove this word permanently? It won\'t appear in future games.')) {
     socket.emit('remove-word');
   }
+  
+  // Resume timer after popup
+  socket.emit('resume-timer');
 });
 
 endRoundBtn.addEventListener('click', () => {
@@ -794,7 +800,20 @@ socket.on('word-result', (data) => {
 socket.on('timer-sync', (data) => {
   timerDisplay.textContent = data.timeRemaining;
   if (data.paused) {
-    timerDisplay.classList.add('warning');
+    timerDisplay.classList.add('paused');
+  } else {
+    timerDisplay.classList.remove('paused');
+  }
+});
+
+socket.on('timer-paused', () => {
+  timerDisplay.classList.add('paused');
+});
+
+socket.on('timer-resumed', (data) => {
+  timerDisplay.classList.remove('paused');
+  if (data.timeRemaining !== undefined) {
+    timerDisplay.textContent = data.timeRemaining;
   }
 });
 
