@@ -18,6 +18,7 @@ let selectedLanguage = 'en';
 let selectedMaxSkips = 2;
 let currentRoundWordsList = [];
 let skipsRemaining = 2;
+let pendingDisconnectToasts = new Map(); // playerId -> timeout
 
 // DOM Elements
 const screens = {
@@ -230,7 +231,10 @@ teamBDrop.addEventListener('drop', handleDrop);
 function updateActorSelect(state) {
   actorSelect.innerHTML = '<option value="">Select a player...</option>';
   
+  if (!state || !state.players) return;
+  
   state.players.forEach(player => {
+    // Show all connected players
     if (player.connected) {
       const option = document.createElement('option');
       option.value = player.id;
@@ -238,6 +242,8 @@ function updateActorSelect(state) {
       actorSelect.appendChild(option);
     }
   });
+  
+  console.log('Actor dropdown updated:', actorSelect.options.length - 1, 'players available');
 }
 
 function updateTransferHostSelect(state) {
@@ -604,8 +610,10 @@ socket.on('room-joined', (data) => {
 });
 
 socket.on('player-joined', (data) => {
+  currentState = data.state;
   updatePlayerLists(data.state);
   updateTransferHostSelect(data.state);
+  updateActorSelect(data.state);
   showToast(`${data.playerName} joined Team ${data.team}`, 'info');
 });
 
@@ -613,6 +621,7 @@ socket.on('player-left', (data) => {
   currentState = data.state;
   updatePlayerLists(data.state);
   updateTransferHostSelect(data.state);
+  updateActorSelect(data.state);
   
   // Check if we became host
   if (data.state.hostId === playerId && !isHost) {
@@ -631,14 +640,31 @@ socket.on('player-disconnected', (data) => {
   currentState = data.state;
   updatePlayerLists(data.state);
   updateTransferHostSelect(data.state);
-  showToast(`${data.playerName} disconnected`, 'info');
+  updateActorSelect(data.state);
+  
+  // Delay disconnect message by 3 seconds (in case they reconnect quickly)
+  const timeout = setTimeout(() => {
+    showToast(`${data.playerName} disconnected`, 'info');
+    pendingDisconnectToasts.delete(data.playerId);
+  }, 3000);
+  pendingDisconnectToasts.set(data.playerId, timeout);
 });
 
 socket.on('player-reconnected', (data) => {
   currentState = data.state;
   updatePlayerLists(data.state);
   updateTransferHostSelect(data.state);
-  showToast(`${data.playerName} reconnected`, 'success');
+  updateActorSelect(data.state);
+  
+  // Cancel pending disconnect toast if they reconnected quickly
+  const pendingTimeout = pendingDisconnectToasts.get(data.playerId);
+  if (pendingTimeout) {
+    clearTimeout(pendingTimeout);
+    pendingDisconnectToasts.delete(data.playerId);
+    // Don't show reconnected message if disconnect wasn't shown
+  } else {
+    showToast(`${data.playerName} reconnected`, 'success');
+  }
 });
 
 socket.on('teams-updated', (data) => {
@@ -828,6 +854,7 @@ socket.on('round-ended', (data) => {
   // Re-enable buttons
   correctBtn.disabled = false;
   skipBtn.disabled = false;
+  removeWordBtn.disabled = false;
   
   showToast('Round ended!', 'info');
 });
