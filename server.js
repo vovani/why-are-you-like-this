@@ -182,6 +182,43 @@ io.on('connection', (socket) => {
     console.log(`Player ${playerName} joined room ${room.code} on Team ${player.team}`);
   });
 
+  // Auto-rejoin room after socket reconnects (silent - no error toasts)
+  socket.on('rejoin-room', ({ playerId, roomCode, playerName }) => {
+    const room = game.getRoom(roomCode);
+    
+    if (!room) {
+      // Room gone - just clear storage, don't show error
+      socket.emit('rejoin-failed', { silent: true });
+      return;
+    }
+
+    const player = room.players.get(playerId);
+    if (!player) {
+      // Player no longer in room - just clear storage
+      socket.emit('rejoin-failed', { silent: true });
+      return;
+    }
+
+    game.handlePlayerReconnect(room, playerId, socket.id);
+    currentPlayerId = playerId;
+    currentRoomCode = room.code;
+    socket.join(room.code);
+
+    socket.emit('reconnect-success', {
+      playerId,
+      state: game.getRoomState(room, playerId)
+    });
+
+    // Notify others (this will be delayed on client side)
+    socket.to(room.code).emit('player-reconnected', {
+      playerId,
+      playerName: player.name,
+      state: game.getRoomState(room)
+    });
+
+    console.log(`Player ${player.name} auto-rejoined room ${room.code}`);
+  });
+
   // Attempt to reconnect to a room
   socket.on('reconnect-attempt', ({ playerId, roomCode }) => {
     const room = game.getRoom(roomCode);

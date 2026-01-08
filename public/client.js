@@ -13,6 +13,46 @@ const socket = io({
   transports: ['websocket', 'polling']
 });
 
+// Track connection state
+let isConnected = false;
+let hasAttemptedAutoRejoin = false;
+
+// Auto-rejoin room on reconnect
+socket.on('connect', () => {
+  console.log('Socket connected:', socket.id);
+  isConnected = true;
+  
+  // If we have stored session info, try to rejoin
+  const storedPlayerId = localStorage.getItem('playerId');
+  const storedRoomCode = localStorage.getItem('roomCode');
+  const storedPlayerName = localStorage.getItem('playerName');
+  
+  if (storedPlayerId && storedRoomCode && storedPlayerName && !hasAttemptedAutoRejoin) {
+    hasAttemptedAutoRejoin = true;
+    console.log('Attempting auto-rejoin to room:', storedRoomCode);
+    socket.emit('rejoin-room', {
+      playerId: storedPlayerId,
+      roomCode: storedRoomCode,
+      playerName: storedPlayerName
+    });
+  }
+});
+
+socket.on('disconnect', (reason) => {
+  console.log('Socket disconnected:', reason);
+  isConnected = false;
+  hasAttemptedAutoRejoin = false; // Allow rejoin on next connect
+  
+  // Only show toast for unexpected disconnects (not manual ones)
+  if (reason !== 'io client disconnect') {
+    showToast('Connection lost, reconnecting...', 'info');
+  }
+});
+
+socket.on('connect_error', (error) => {
+  console.log('Connection error:', error.message);
+});
+
 // Game state
 let playerId = localStorage.getItem('playerId');
 let roomCode = localStorage.getItem('roomCode');
@@ -799,6 +839,14 @@ socket.on('reconnect-failed', (data) => {
   localStorage.removeItem('roomCode');
   roomCode = null;
   showScreen('landing');
+});
+
+socket.on('rejoin-failed', (data) => {
+  // Silent failure - just clear storage
+  localStorage.removeItem('roomCode');
+  roomCode = null;
+  hasAttemptedAutoRejoin = false;
+  // Don't show error toast for silent failures
 });
 
 socket.on('game-started', (data) => {
