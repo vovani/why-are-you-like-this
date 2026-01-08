@@ -346,6 +346,12 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // Prevent starting a round when one is already active
+    if (room.gameState === 'roundActive') {
+      socket.emit('error', { message: 'A round is already in progress' });
+      return;
+    }
+
     const actor = room.players.get(actorId);
     if (!actor || !actor.connected) {
       socket.emit('error', { message: 'Selected player is not available' });

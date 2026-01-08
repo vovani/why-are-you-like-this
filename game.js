@@ -236,6 +236,12 @@ function startGame(room, difficulty, language = 'en', bannedWords = []) {
 }
 
 function startRound(room, actorId, timerDuration, onTimerEnd) {
+  // Clear any existing timer first to prevent duplicates
+  if (room.timerInterval) {
+    clearInterval(room.timerInterval);
+    room.timerInterval = null;
+  }
+
   room.currentActorId = actorId;
   room.roundTimer = timerDuration;
   room.roundTimeRemaining = timerDuration;
@@ -246,7 +252,8 @@ function startRound(room, actorId, timerDuration, onTimerEnd) {
 
   // Start the timer
   room.timerInterval = setInterval(() => {
-    if (!room.timerPaused) {
+    // Only tick if round is still active and not paused
+    if (room.gameState === 'roundActive' && !room.timerPaused) {
       room.roundTimeRemaining--;
       if (room.roundTimeRemaining <= 0) {
         endRound(room);
@@ -392,6 +399,11 @@ function removeCurrentWord(room) {
 }
 
 function endRound(room) {
+  // Prevent double-ending a round
+  if (room.gameState !== 'roundActive') {
+    return room;
+  }
+
   if (room.timerInterval) {
     clearInterval(room.timerInterval);
     room.timerInterval = null;
