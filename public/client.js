@@ -121,6 +121,7 @@ const currentActorName = document.getElementById('current-actor-name');
 const roundHistory = document.getElementById('round-history');
 const hostGameControls = document.getElementById('host-game-controls');
 const endRoundBtn = document.getElementById('end-round-btn');
+const forceEndRoundBtn = document.getElementById('force-end-round-btn');
 const endGameBtn = document.getElementById('end-game-btn');
 
 // Current round elements
@@ -447,6 +448,7 @@ function updateGameUI(state) {
   actorView.classList.add('hidden');
   guesserView.classList.add('hidden');
   endRoundBtn.classList.add('hidden');
+  forceEndRoundBtn.classList.add('hidden');
   currentRoundSection.classList.add('hidden');
   
   // Show appropriate section based on game state
@@ -473,6 +475,7 @@ function updateGameUI(state) {
     }
     if (isHost) {
       endRoundBtn.classList.remove('hidden');
+      forceEndRoundBtn.classList.remove('hidden');
     }
   }
   
@@ -639,6 +642,12 @@ removeWordBtn.addEventListener('click', () => {
 
 endRoundBtn.addEventListener('click', () => {
   socket.emit('end-round');
+});
+
+forceEndRoundBtn.addEventListener('click', () => {
+  if (confirm('Force end the round? Use this if the game is stuck.')) {
+    socket.emit('force-end-round');
+  }
 });
 
 endGameBtn.addEventListener('click', () => {
@@ -810,6 +819,11 @@ socket.on('reconnect-success', (data) => {
   currentState = data.state;
   isHost = data.state.hostId === playerId;
   
+  // Restore current round words from state (catch up on what happened)
+  if (data.state.currentRoundWords) {
+    currentRoundWordsList = data.state.currentRoundWords;
+  }
+  
   if (data.state.gameState === 'lobby') {
     displayRoomCode.textContent = roomCode;
     updatePlayerLists(data.state);
@@ -828,7 +842,14 @@ socket.on('reconnect-success', (data) => {
     updateGameOverUI(data.state);
     showScreen('gameover');
   } else {
+    // Restore skips remaining
+    if (data.state.skipsRemaining !== undefined) {
+      skipsRemaining = data.state.skipsRemaining;
+      updateSkipButton(skipsRemaining, data.state.maxSkipsPerRound || 2);
+    }
+    
     updateGameUI(data.state);
+    updateCurrentRoundWords();
     showScreen('game');
   }
   
@@ -859,17 +880,19 @@ socket.on('game-started', (data) => {
 socket.on('round-started', (data) => {
   currentState = data.state;
   
-  // Reset current round words
-  currentRoundWordsList = [];
+  // Reset or restore current round words (in case of catch-up after reconnect)
+  currentRoundWordsList = data.state.currentRoundWords || [];
   
   // Reset skip button
   updateSkipButton(data.state.skipsRemaining, data.state.maxSkipsPerRound);
   
   updateGameUI(data.state);
+  updateCurrentRoundWords();
   
-  // Reset round correct count
-  roundCorrect.textContent = '0';
-  guesserRoundCorrect.textContent = '0';
+  // Update round correct count
+  const correctCount = currentRoundWordsList.filter(w => w.result === 'correct').length;
+  roundCorrect.textContent = correctCount;
+  guesserRoundCorrect.textContent = correctCount;
   
   if (data.state.currentActorId === playerId) {
     showToast("You're acting! Go!", 'success');

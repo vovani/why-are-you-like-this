@@ -253,6 +253,11 @@ body::before {
   color: white;
 }
 
+.btn-warning {
+  background: linear-gradient(135deg, #f7b731, #fa8231);
+  color: #1a1a2e;
+}
+
 .btn-large {
   padding: 20px 32px;
   font-size: 1.2rem;

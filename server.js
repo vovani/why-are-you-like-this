@@ -354,10 +354,13 @@ io.on('connection', (socket) => {
     }
 
     const actor = room.players.get(actorId);
-    if (!actor || !actor.connected) {
-      socket.emit('error', { message: 'Selected player is not available' });
+    if (!actor) {
+      socket.emit('error', { message: 'Selected player not found' });
       return;
     }
+
+    // Allow starting round even if actor is temporarily disconnected
+    // They'll see the state when they reconnect
 
     game.startRound(room, actorId, timerDuration, (endedRoom) => {
       // Timer ended callback
@@ -534,6 +537,25 @@ io.on('connection', (socket) => {
     });
 
     console.log(`Round ended in ${room.code}`);
+  });
+
+  // Force end round - for stuck scenarios
+  socket.on('force-end-round', () => {
+    const room = game.getRoom(currentRoomCode);
+    if (!room) return;
+
+    if (currentPlayerId !== room.hostId) {
+      socket.emit('error', { message: 'Only the host can force end rounds' });
+      return;
+    }
+
+    game.forceEndRound(room);
+
+    io.to(room.code).emit('round-ended', {
+      state: game.getRoomState(room)
+    });
+
+    console.log(`Round force-ended in ${room.code}`);
   });
 
   // End the game
@@ -739,9 +761,27 @@ app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
 
+// Restart timers for any active rounds after server restart
+function restartActiveRoundTimers() {
+  const allRooms = game.getAllRooms();
+  for (const [code, room] of allRooms) {
+    if (room.gameState === 'roundActive') {
+      console.log(`Restarting timer for room ${code} (${room.roundTimeRemaining}s remaining)`);
+      game.restartRoundTimer(room, (endedRoom) => {
+        io.to(endedRoom.code).emit('round-ended', {
+          state: game.getRoomState(endedRoom)
+        });
+      });
+    }
+  }
+}
+
 // Start server
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+  
+  // Restart timers for active rounds
+  restartActiveRoundTimers();
 });
 
