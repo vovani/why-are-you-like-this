@@ -968,6 +968,12 @@ body::before {
   text-decoration: line-through;
 }
 
+.history-word.cancelled {
+  background: rgba(252, 92, 101, 0.15);
+  color: var(--danger);
+  text-decoration: line-through;
+}
+
 /* Current Round Section */
 .current-round {
   border: 2px solid var(--accent-primary);
@@ -994,6 +1000,9 @@ body::before {
 }
 
 .current-word-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 0.9rem;
   padding: 6px 12px;
   border-radius: 20px;
@@ -1011,6 +1020,30 @@ body::before {
   background: rgba(255,255,255,0.08);
   color: var(--text-muted);
   text-decoration: line-through;
+}
+
+.current-word-item.cancelled {
+  background: rgba(252, 92, 101, 0.15);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  text-decoration: line-through;
+}
+
+.current-word-item .undo-btn {
+  background: transparent;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 2px 6px;
+  border-radius: 50%;
+  opacity: 0.7;
+  transition: opacity 0.2s, background 0.2s;
+}
+
+.current-word-item .undo-btn:hover {
+  opacity: 1;
+  background: rgba(252, 92, 101, 0.3);
 }
 
 @keyframes popIn {

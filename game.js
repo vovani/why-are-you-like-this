@@ -7,7 +7,7 @@ const rooms = new Map();
 const playerSessions = new Map();
 
 // Grace period for reconnection (60 seconds)
-const RECONNECT_GRACE_PERIOD = 60000;
+const RECONNECT_GRACE_PERIOD = 600000; // 10 minutes
 
 function generateRoomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -293,6 +293,35 @@ function markCorrect(room) {
   };
 }
 
+function undoCorrect(room, wordIndex) {
+  // Find the word in current round words
+  if (wordIndex < 0 || wordIndex >= room.currentRoundWords.length) {
+    return null;
+  }
+
+  const wordEntry = room.currentRoundWords[wordIndex];
+  if (wordEntry.result !== 'correct') {
+    return null; // Can only undo correct words
+  }
+
+  // Deduct the point from the actor's team
+  const actor = room.players.get(room.currentActorId);
+  if (actor) {
+    room.scores[actor.team] = Math.max(0, room.scores[actor.team] - 1);
+  }
+
+  // Mark the word as cancelled
+  room.currentRoundWords[wordIndex].result = 'cancelled';
+
+  return {
+    word: wordEntry.word,
+    wordIndex,
+    result: 'cancelled',
+    scores: { ...room.scores },
+    currentRoundWords: [...room.currentRoundWords]
+  };
+}
+
 function markSkip(room) {
   const word = getCurrentWord(room);
   if (!word) return null;
@@ -439,6 +468,7 @@ module.exports = {
   resumeTimer,
   getCurrentWord,
   markCorrect,
+  undoCorrect,
   markSkip,
   removeCurrentWord,
   endRound,

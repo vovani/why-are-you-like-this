@@ -347,6 +347,36 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Host undoes a correct word (actor broke rules)
+  socket.on('undo-correct', ({ wordIndex }) => {
+    const room = game.getRoom(currentRoomCode);
+    if (!room) return;
+
+    // Only host can undo
+    if (currentPlayerId !== room.hostId) {
+      socket.emit('error', { message: 'Only the host can undo words' });
+      return;
+    }
+
+    const result = game.undoCorrect(room, wordIndex);
+    if (!result) {
+      socket.emit('error', { message: 'Cannot undo this word' });
+      return;
+    }
+
+    // Send update to all players
+    for (const [pid, player] of room.players) {
+      if (player.socketId) {
+        io.to(player.socketId).emit('word-undone', {
+          ...result,
+          timeRemaining: room.roundTimeRemaining
+        });
+      }
+    }
+
+    console.log(`Word "${result.word}" undone in room ${room.code}`);
+  });
+
   // Actor removes word (ban it permanently)
   socket.on('remove-word', () => {
     const room = game.getRoom(currentRoomCode);

@@ -284,11 +284,30 @@ function updateSkipButton(remaining, max) {
 function updateCurrentRoundWords() {
   currentRoundWords.innerHTML = '';
   
-  currentRoundWordsList.forEach(item => {
-    const span = document.createElement('span');
-    span.className = `current-word-item ${item.result}`;
-    span.textContent = item.word;
-    currentRoundWords.appendChild(span);
+  currentRoundWordsList.forEach((item, index) => {
+    const container = document.createElement('div');
+    container.className = `current-word-item ${item.result}`;
+    
+    const wordSpan = document.createElement('span');
+    wordSpan.className = 'word-text';
+    wordSpan.textContent = item.word;
+    container.appendChild(wordSpan);
+    
+    // Add undo button for correct words (host only, during active round)
+    if (isHost && item.result === 'correct' && currentState?.gameState === 'roundActive') {
+      const undoBtn = document.createElement('button');
+      undoBtn.className = 'undo-btn';
+      undoBtn.textContent = '✕';
+      undoBtn.title = 'Undo (actor broke rules)';
+      undoBtn.addEventListener('click', () => {
+        if (confirm(`Undo "${item.word}"? This will deduct 1 point.`)) {
+          socket.emit('undo-correct', { wordIndex: index });
+        }
+      });
+      container.appendChild(undoBtn);
+    }
+    
+    currentRoundWords.appendChild(container);
   });
 }
 
@@ -642,11 +661,11 @@ socket.on('player-disconnected', (data) => {
   updateTransferHostSelect(data.state);
   updateActorSelect(data.state);
   
-  // Delay disconnect message by 3 seconds (in case they reconnect quickly)
+  // Delay disconnect message by 10 seconds (in case they reconnect quickly)
   const timeout = setTimeout(() => {
     showToast(`${data.playerName} disconnected`, 'info');
     pendingDisconnectToasts.delete(data.playerId);
-  }, 3000);
+  }, 10000);
   pendingDisconnectToasts.set(data.playerId, timeout);
 });
 
@@ -823,6 +842,25 @@ socket.on('word-result', (data) => {
   }
 });
 
+socket.on('word-undone', (data) => {
+  // Update the word in our list
+  if (data.wordIndex >= 0 && data.wordIndex < currentRoundWordsList.length) {
+    currentRoundWordsList[data.wordIndex].result = 'cancelled';
+  }
+  updateCurrentRoundWords();
+  
+  // Update scores
+  scoreA.textContent = data.scores.A;
+  scoreB.textContent = data.scores.B;
+  
+  // Update correct count
+  const correctCount = currentRoundWordsList.filter(w => w.result === 'correct').length;
+  roundCorrect.textContent = correctCount;
+  guesserRoundCorrect.textContent = correctCount;
+  
+  showToast(`"${data.word}" undone (-1 point)`, 'info');
+});
+
 socket.on('timer-sync', (data) => {
   timerDisplay.textContent = data.timeRemaining;
   if (data.paused) {
@@ -855,6 +893,9 @@ socket.on('round-ended', (data) => {
   correctBtn.disabled = false;
   skipBtn.disabled = false;
   removeWordBtn.disabled = false;
+  
+  // Reset actor selection for next round
+  actorSelect.value = '';
   
   showToast('Round ended!', 'info');
 });
