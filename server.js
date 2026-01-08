@@ -43,13 +43,14 @@ const io = new Server(httpServer, {
   cors: {
     origin: "*"
   },
-  // More lenient connection settings to prevent frequent disconnects
-  pingTimeout: 60000,      // 60 seconds before considering connection dead
-  pingInterval: 25000,     // Ping every 25 seconds
+  // Aggressive keep-alive settings for Cloudflare (100s timeout)
+  pingTimeout: 120000,     // 2 minutes before considering connection dead
+  pingInterval: 20000,     // Ping every 20 seconds (well under Cloudflare's 100s timeout)
   upgradeTimeout: 30000,   // 30 seconds to upgrade connection
   maxHttpBufferSize: 1e6,  // 1MB max message size
   transports: ['websocket', 'polling'], // Prefer websocket but fallback to polling
-  allowUpgrades: true
+  allowUpgrades: true,
+  connectTimeout: 45000    // 45 seconds to establish connection
 });
 
 // Parse JSON bodies
@@ -591,6 +592,12 @@ io.on('connection', (socket) => {
     io.to(room.code).emit('timer-resumed', {
       timeRemaining: room.roundTimeRemaining
     });
+  });
+
+  // Heartbeat to keep connection alive
+  socket.on('heartbeat', () => {
+    // Just acknowledge - keeps the connection alive through Cloudflare
+    socket.emit('heartbeat-ack');
   });
 
   // Request timer sync

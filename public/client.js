@@ -1032,10 +1032,24 @@ setInterval(() => {
   }
 }, 1000);
 
+// Heartbeat to keep connection alive (Cloudflare times out after 100s of inactivity)
+setInterval(() => {
+  if (isConnected && roomCode) {
+    socket.emit('heartbeat');
+  }
+}, 30000); // Every 30 seconds
+
 // Handle page visibility change for reconnection
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && roomCode) {
-    socket.emit('reconnect-attempt', { playerId, roomCode });
+  if (!document.hidden && roomCode && playerId) {
+    console.log('Page became visible, checking connection...');
+    // Force reconnect if socket seems disconnected
+    if (!socket.connected) {
+      socket.connect();
+    } else {
+      // Send a ping to verify connection is still good
+      socket.emit('heartbeat');
+    }
   }
 });
 
