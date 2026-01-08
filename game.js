@@ -322,6 +322,39 @@ function undoCorrect(room, wordIndex) {
   };
 }
 
+// Undo a word from history (after round ended)
+function undoHistoryWord(room, roundIndex, wordIndex) {
+  if (roundIndex < 0 || roundIndex >= room.roundHistory.length) {
+    return null;
+  }
+
+  const round = room.roundHistory[roundIndex];
+  if (wordIndex < 0 || wordIndex >= round.words.length) {
+    return null;
+  }
+
+  const wordEntry = round.words[wordIndex];
+  if (wordEntry.result !== 'correct') {
+    return null; // Can only undo correct words
+  }
+
+  // Deduct the point from the actor's team
+  room.scores[round.actorTeam] = Math.max(0, room.scores[round.actorTeam] - 1);
+
+  // Mark the word as cancelled
+  round.words[wordIndex].result = 'cancelled';
+  round.correct = round.words.filter(w => w.result === 'correct').length;
+
+  return {
+    word: wordEntry.word,
+    roundIndex,
+    wordIndex,
+    result: 'cancelled',
+    scores: { ...room.scores },
+    roundHistory: room.roundHistory
+  };
+}
+
 function markSkip(room) {
   const word = getCurrentWord(room);
   if (!word) return null;
@@ -469,6 +502,7 @@ module.exports = {
   getCurrentWord,
   markCorrect,
   undoCorrect,
+  undoHistoryWord,
   markSkip,
   removeCurrentWord,
   endRound,

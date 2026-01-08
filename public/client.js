@@ -3,7 +3,14 @@ const basePath = window.location.pathname.includes('/why_are_you_like_this')
   ? '/why_are_you_like_this' 
   : '';
 const socket = io({
-  path: basePath + '/socket.io'
+  path: basePath + '/socket.io',
+  // Robust connection settings
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+  timeout: 60000,
+  transports: ['websocket', 'polling']
 });
 
 // Game state
@@ -319,8 +326,12 @@ function updateRoundHistory(state) {
   
   roundHistory.innerHTML = '';
   
-  // Show most recent first
-  [...state.roundHistory].reverse().forEach(round => {
+  // Show most recent first (but keep original indices for undo)
+  const reversedHistory = [...state.roundHistory].reverse();
+  reversedHistory.forEach((round, reversedIdx) => {
+    // Calculate the original index
+    const originalRoundIndex = state.roundHistory.length - 1 - reversedIdx;
+    
     const item = document.createElement('div');
     item.className = 'history-item';
     
@@ -333,11 +344,30 @@ function updateRoundHistory(state) {
     
     const words = document.createElement('div');
     words.className = 'history-words';
-    round.words.forEach(w => {
-      const wordSpan = document.createElement('span');
-      wordSpan.className = `history-word ${w.result}`;
-      wordSpan.textContent = w.word;
-      words.appendChild(wordSpan);
+    round.words.forEach((w, wordIdx) => {
+      const wordContainer = document.createElement('span');
+      wordContainer.className = `history-word ${w.result}`;
+      
+      const wordText = document.createElement('span');
+      wordText.textContent = w.word;
+      wordContainer.appendChild(wordText);
+      
+      // Add undo button for correct words (host only)
+      if (isHost && w.result === 'correct') {
+        const undoBtn = document.createElement('button');
+        undoBtn.className = 'history-undo-btn';
+        undoBtn.textContent = '✕';
+        undoBtn.title = 'Undo (actor broke rules)';
+        undoBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (confirm(`Undo "${w.word}"? This will deduct 1 point from Team ${round.actorTeam}.`)) {
+            socket.emit('undo-history-word', { roundIndex: originalRoundIndex, wordIndex: wordIdx });
+          }
+        });
+        wordContainer.appendChild(undoBtn);
+      }
+      
+      words.appendChild(wordContainer);
     });
     
     item.appendChild(header);
@@ -859,6 +889,19 @@ socket.on('word-undone', (data) => {
   guesserRoundCorrect.textContent = correctCount;
   
   showToast(`"${data.word}" undone (-1 point)`, 'info');
+});
+
+socket.on('history-updated', (data) => {
+  currentState = data.state;
+  
+  // Update scores
+  scoreA.textContent = data.state.scores.A;
+  scoreB.textContent = data.state.scores.B;
+  
+  // Update history
+  updateRoundHistory(data.state);
+  
+  showToast('History updated', 'info');
 });
 
 socket.on('timer-sync', (data) => {

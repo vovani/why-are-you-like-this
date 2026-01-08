@@ -974,6 +974,30 @@ body::before {
   text-decoration: line-through;
 }
 
+.history-word.correct {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.history-undo-btn {
+  background: transparent;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 0.65rem;
+  padding: 1px 4px;
+  border-radius: 50%;
+  opacity: 0.5;
+  transition: opacity 0.2s, background 0.2s;
+  line-height: 1;
+}
+
+.history-undo-btn:hover {
+  opacity: 1;
+  background: rgba(252, 92, 101, 0.3);
+}
+
 /* Current Round Section */
 .current-round {
   border: 2px solid var(--accent-primary);

@@ -42,7 +42,14 @@ const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
     origin: "*"
-  }
+  },
+  // More lenient connection settings to prevent frequent disconnects
+  pingTimeout: 60000,      // 60 seconds before considering connection dead
+  pingInterval: 25000,     // Ping every 25 seconds
+  upgradeTimeout: 30000,   // 30 seconds to upgrade connection
+  maxHttpBufferSize: 1e6,  // 1MB max message size
+  transports: ['websocket', 'polling'], // Prefer websocket but fallback to polling
+  allowUpgrades: true
 });
 
 // Parse JSON bodies
@@ -375,6 +382,35 @@ io.on('connection', (socket) => {
     }
 
     console.log(`Word "${result.word}" undone in room ${room.code}`);
+  });
+
+  // Host undoes a word from history (after round ended)
+  socket.on('undo-history-word', ({ roundIndex, wordIndex }) => {
+    const room = game.getRoom(currentRoomCode);
+    if (!room) return;
+
+    // Only host can undo
+    if (currentPlayerId !== room.hostId) {
+      socket.emit('error', { message: 'Only the host can undo words' });
+      return;
+    }
+
+    const result = game.undoHistoryWord(room, roundIndex, wordIndex);
+    if (!result) {
+      socket.emit('error', { message: 'Cannot undo this word' });
+      return;
+    }
+
+    // Send update to all players
+    for (const [pid, player] of room.players) {
+      if (player.socketId) {
+        io.to(player.socketId).emit('history-updated', {
+          state: game.getRoomState(room, pid)
+        });
+      }
+    }
+
+    console.log(`History word "${result.word}" undone in room ${room.code}`);
   });
 
   // Actor removes word (ban it permanently)

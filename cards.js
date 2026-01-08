@@ -211,8 +211,14 @@ const cards = {
 // Get shuffled cards for a specific difficulty and language
 function getShuffledDeck(difficulty, language = 'en', bannedWords = []) {
   const lang = cards[language] || cards.en;
-  // Filter out banned words
-  const deck = [...lang[difficulty]].filter(word => !bannedWords.includes(word));
+  // Filter out banned words and multi-word phrases (only allow single words)
+  const deck = [...lang[difficulty]].filter(word => {
+    // Skip banned words
+    if (bannedWords.includes(word)) return false;
+    // Only allow single words (no spaces)
+    if (word.includes(' ')) return false;
+    return true;
+  });
   // Shuffle
   for (let i = deck.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
