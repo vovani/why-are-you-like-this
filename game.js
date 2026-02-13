@@ -1,628 +1,594 @@
-const { getShuffledDeck, getLanguages } = require('./cards');
+'use strict';
+
+const { getShuffledDeck } = require('./cards');
 const fs = require('fs');
 const path = require('path');
 
-// File path for persistent storage
+// ============================================================
+// Constants
+// ============================================================
 const ROOMS_FILE = path.join(__dirname, 'rooms.json');
+const RECONNECT_GRACE_MS = 10 * 60 * 1000; // 10 min grace period
+const SAVE_DEBOUNCE_MS = 3000;
 
-// Store all active rooms
-let rooms = new Map();
+const STATES = Object.freeze({
+  LOBBY: 'lobby',
+  ROUND_SETUP: 'roundSetup',
+  ROUND_ACTIVE: 'roundActive',
+  GAME_OVER: 'gameOver',
+});
 
-// Store player sessions for reconnection (playerId -> roomCode)
-const playerSessions = new Map();
+// Valid state transitions – anything not listed is rejected
+const TRANSITIONS = {
+  [STATES.LOBBY]:        [STATES.ROUND_SETUP],
+  [STATES.ROUND_SETUP]:  [STATES.ROUND_ACTIVE, STATES.GAME_OVER, STATES.LOBBY],
+  [STATES.ROUND_ACTIVE]: [STATES.ROUND_SETUP, STATES.GAME_OVER],
+  [STATES.GAME_OVER]:    [STATES.LOBBY],
+};
 
-// Grace period for reconnection (10 minutes)
-const RECONNECT_GRACE_PERIOD = 600000;
+// ============================================================
+// Storage
+// ============================================================
+const rooms = new Map();
+const playerToRoom = new Map(); // playerId → roomCode
 
-// Timer callbacks (can't be persisted, so we store them separately)
-const timerCallbacks = new Map();
+let _saveTimer = null;
+let _dirty = false;
 
-// Load rooms from file on startup
-function loadRooms() {
+/** Mark state as needing a save (debounced to ≤1 write per 3 s) */
+function scheduleSave() {
+  _dirty = true;
+  if (!_saveTimer) {
+    _saveTimer = setTimeout(() => {
+      _saveTimer = null;
+      if (_dirty) { _dirty = false; _persist(); }
+    }, SAVE_DEBOUNCE_MS);
+  }
+}
+
+/** Force an immediate write (used on shutdown) */
+function forceSave() {
+  if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+  _dirty = false;
+  _persist();
+}
+
+function _persist() {
   try {
-    if (fs.existsSync(ROOMS_FILE)) {
-      const data = fs.readFileSync(ROOMS_FILE, 'utf8');
-      const roomsData = JSON.parse(data);
-      
-      for (const roomData of roomsData) {
-        // Convert players array back to Map
-        const room = {
-          ...roomData,
-          players: new Map(roomData.players.map(p => [p.id, {
+    const arr = [];
+    for (const [, room] of rooms) arr.push(_serialize(room));
+    fs.writeFileSync(ROOMS_FILE, JSON.stringify(arr, null, 2));
+  } catch (err) {
+    console.error('[save] Failed:', err.message);
+  }
+}
+
+function _serialize(room) {
+  const players = [];
+  for (const [id, p] of room.players) {
+    players.push({ id, name: p.name, team: p.team });
+  }
+  return {
+    code: room.code,
+    hostId: room.hostId,
+    players,
+    teams: room.teams,
+    scores: room.scores,
+    gameState: room.gameState,
+    difficulty: room.difficulty,
+    language: room.language,
+    deck: room.deck,
+    deckIndex: room.deckIndex,
+    currentActorId: room.currentActorId,
+    roundDuration: room.roundDuration,
+    roundEndsAt: room.roundEndsAt,
+    timerPaused: room.timerPaused,
+    pauseRemainingMs: room.pauseRemainingMs,
+    roundHistory: room.roundHistory,
+    currentRoundWords: room.currentRoundWords,
+    maxSkipsPerRound: room.maxSkipsPerRound,
+    skipsUsedThisRound: room.skipsUsedThisRound,
+  };
+}
+
+function _load() {
+  try {
+    if (!fs.existsSync(ROOMS_FILE)) return;
+    const arr = JSON.parse(fs.readFileSync(ROOMS_FILE, 'utf8'));
+    for (const rd of arr) {
+      const room = {
+        ...rd,
+        players: new Map(
+          rd.players.map(p => [p.id, {
             ...p,
-            connected: false, // All players start disconnected after restart
+            connected: false,
             socketId: null,
-            disconnectTimeout: null
-          }])),
-          timerInterval: null, // Timer needs to be restarted
-          timerPaused: true // Pause timer after restart
-        };
-        
-        rooms.set(room.code, room);
-        
-        // Rebuild player sessions
-        for (const [playerId] of room.players) {
-          playerSessions.set(playerId, room.code);
+            disconnectTimer: null,
+          }])
+        ),
+        roundEndTimeout: null, // runtime-only
+      };
+
+      // Fixup rounds that were active when the server died
+      if (room.gameState === STATES.ROUND_ACTIVE) {
+        if (!room.timerPaused) {
+          const remaining = room.roundEndsAt ? room.roundEndsAt - Date.now() : 0;
+          if (remaining <= 0) {
+            // Round expired while offline → finalize it
+            _finalizeRound(room);
+          } else {
+            // Pause until someone reconnects
+            room.timerPaused = true;
+            room.pauseRemainingMs = remaining;
+            room.roundEndsAt = null;
+          }
         }
       }
-      
-      console.log(`Loaded ${rooms.size} rooms from file`);
+
+      rooms.set(room.code, room);
+      for (const [pid] of room.players) playerToRoom.set(pid, room.code);
     }
+    if (rooms.size > 0) console.log(`[init] Loaded ${rooms.size} room(s)`);
   } catch (err) {
-    console.error('Failed to load rooms:', err);
-    rooms = new Map();
+    console.error('[init] Load failed:', err.message);
   }
 }
 
-// Save rooms to file
-function saveRooms() {
-  try {
-    const roomsData = [];
-    
-    for (const [code, room] of rooms) {
-      // Convert players Map to array for JSON
-      const players = [];
-      for (const [id, player] of room.players) {
-        players.push({
-          id,
-          name: player.name,
-          team: player.team
-        });
-      }
-      
-      roomsData.push({
-        code: room.code,
-        hostId: room.hostId,
-        players,
-        teams: room.teams,
-        scores: room.scores,
-        gameState: room.gameState,
-        difficulty: room.difficulty,
-        language: room.language,
-        deck: room.deck,
-        currentCardIndex: room.currentCardIndex,
-        currentActorId: room.currentActorId,
-        roundTimer: room.roundTimer,
-        roundTimeRemaining: room.roundTimeRemaining,
-        timerPaused: room.timerPaused,
-        roundHistory: room.roundHistory,
-        currentRoundWords: room.currentRoundWords,
-        maxSkipsPerRound: room.maxSkipsPerRound,
-        skipsUsedThisRound: room.skipsUsedThisRound
-      });
-    }
-    
-    fs.writeFileSync(ROOMS_FILE, JSON.stringify(roomsData, null, 2));
-  } catch (err) {
-    console.error('Failed to save rooms:', err);
+_load();
+
+// ============================================================
+// Global round-end callback
+// ============================================================
+let _roundEndHandler = null;
+
+/**
+ * Register a handler that fires whenever a round ends via timer.
+ * Called once at server startup.
+ */
+function setRoundEndHandler(handler) {
+  _roundEndHandler = handler;
+}
+
+// ============================================================
+// State machine
+// ============================================================
+function _canTransition(room, to) {
+  const allowed = TRANSITIONS[room.gameState];
+  return allowed && allowed.includes(to);
+}
+
+function _transition(room, to) {
+  if (!_canTransition(room, to)) {
+    console.warn(`[state] Invalid: ${room.gameState} → ${to} in ${room.code}`);
+    return false;
+  }
+  room.gameState = to;
+  return true;
+}
+
+// ============================================================
+// Timestamp-based timer (no setInterval drift)
+// ============================================================
+function _clearTimer(room) {
+  if (room.roundEndTimeout) {
+    clearTimeout(room.roundEndTimeout);
+    room.roundEndTimeout = null;
   }
 }
 
-// Auto-save every 30 seconds
-setInterval(saveRooms, 30000);
+function _scheduleEnd(room, ms) {
+  _clearTimer(room);
+  room.roundEndTimeout = setTimeout(() => {
+    room.roundEndTimeout = null;
+    if (room.gameState === STATES.ROUND_ACTIVE) {
+      _finalizeRound(room);
+      if (_roundEndHandler) _roundEndHandler(room);
+    }
+  }, Math.max(0, ms));
+}
 
-// Load rooms on module load
-loadRooms();
+function _startTimer(room, durationSec) {
+  room.roundDuration = durationSec;
+  room.roundEndsAt = Date.now() + durationSec * 1000;
+  room.timerPaused = false;
+  room.pauseRemainingMs = null;
+  _scheduleEnd(room, durationSec * 1000);
+}
 
-function generateRoomCode() {
+function pauseTimer(room) {
+  if (room.gameState !== STATES.ROUND_ACTIVE || room.timerPaused) return false;
+  if (!room.roundEndsAt) return false;
+  const remaining = room.roundEndsAt - Date.now();
+  if (remaining <= 0) return false;
+  room.pauseRemainingMs = remaining;
+  room.timerPaused = true;
+  room.roundEndsAt = null;
+  _clearTimer(room);
+  scheduleSave();
+  return true;
+}
+
+function resumeTimer(room) {
+  if (room.gameState !== STATES.ROUND_ACTIVE || !room.timerPaused) return false;
+  if (!room.pauseRemainingMs || room.pauseRemainingMs <= 0) return false;
+  room.roundEndsAt = Date.now() + room.pauseRemainingMs;
+  room.timerPaused = false;
+  _scheduleEnd(room, room.pauseRemainingMs);
+  room.pauseRemainingMs = null;
+  scheduleSave();
+  return true;
+}
+
+function getTimeRemaining(room) {
+  if (room.gameState !== STATES.ROUND_ACTIVE) return 0;
+  if (room.timerPaused) return Math.max(0, Math.ceil((room.pauseRemainingMs || 0) / 1000));
+  if (!room.roundEndsAt) return 0;
+  return Math.max(0, Math.ceil((room.roundEndsAt - Date.now()) / 1000));
+}
+
+// ============================================================
+// Room code generation
+// ============================================================
+function _generateCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-  let code = '';
-  for (let i = 0; i < 4; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
-  }
+  let code;
+  do {
+    code = '';
+    for (let i = 0; i < 4; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  } while (rooms.has(code));
   return code;
 }
 
-function generatePlayerId() {
-  return 'p_' + Math.random().toString(36).substring(2, 15);
-}
-
-function createRoom(hostPlayerId, hostName) {
-  let roomCode;
-  do {
-    roomCode = generateRoomCode();
-  } while (rooms.has(roomCode));
-
+// ============================================================
+// Room CRUD
+// ============================================================
+function createRoom(hostId, hostName) {
+  const code = _generateCode();
   const room = {
-    code: roomCode,
-    hostId: hostPlayerId,
+    code,
+    hostId,
     players: new Map(),
-    teams: {
-      A: [],
-      B: []
-    },
-    scores: {
-      A: 0,
-      B: 0
-    },
-    gameState: 'lobby',
+    teams: { A: [], B: [] },
+    scores: { A: 0, B: 0 },
+    gameState: STATES.LOBBY,
     difficulty: 'medium',
     language: 'en',
     deck: [],
-    currentCardIndex: 0,
+    deckIndex: 0,
     currentActorId: null,
-    roundTimer: 60,
-    roundTimeRemaining: 0,
-    timerInterval: null,
+    roundDuration: 60,
+    roundEndsAt: null,
     timerPaused: false,
+    pauseRemainingMs: null,
+    roundEndTimeout: null,
     roundHistory: [],
     currentRoundWords: [],
     maxSkipsPerRound: 2,
-    skipsUsedThisRound: 0
+    skipsUsedThisRound: 0,
   };
-
-  addPlayerToRoom(room, hostPlayerId, hostName, null);
-  rooms.set(roomCode, room);
-  saveRooms();
+  addPlayer(room, hostId, hostName, null);
+  rooms.set(code, room);
+  scheduleSave();
   return room;
 }
 
-function addPlayerToRoom(room, playerId, playerName, socketId) {
-  const team = room.teams.A.length <= room.teams.B.length ? 'A' : 'B';
-
-  const player = {
-    id: playerId,
-    name: playerName,
-    team: team,
-    socketId: socketId,
-    connected: !!socketId,
-    disconnectTimeout: null
-  };
-
-  room.players.set(playerId, player);
-  room.teams[team].push(playerId);
-  playerSessions.set(playerId, room.code);
-  saveRooms();
-
-  return player;
-}
-
-function getRoom(roomCode) {
-  if (!roomCode) return null;
-  return rooms.get(roomCode.toUpperCase());
+function getRoom(code) {
+  return code ? rooms.get(code.toUpperCase()) || null : null;
 }
 
 function getAllRooms() {
   return rooms;
 }
 
-function closeRoom(roomCode) {
-  const room = getRoom(roomCode);
-  if (!room) return null;
-  
-  if (room.timerInterval) {
-    clearInterval(room.timerInterval);
+function deleteRoom(code) {
+  const room = rooms.get(code);
+  if (!room) return;
+  _clearTimer(room);
+  for (const [pid, p] of room.players) {
+    if (p.disconnectTimer) clearTimeout(p.disconnectTimer);
+    playerToRoom.delete(pid);
   }
-  
-  for (const [id, player] of room.players) {
-    if (player.disconnectTimeout) {
-      clearTimeout(player.disconnectTimeout);
+  rooms.delete(code);
+  scheduleSave();
+}
+
+// ============================================================
+// Player management
+// ============================================================
+function addPlayer(room, id, name, socketId) {
+  const team = room.teams.A.length <= room.teams.B.length ? 'A' : 'B';
+  const player = {
+    id, name, team, socketId,
+    connected: !!socketId,
+    disconnectTimer: null,
+  };
+  room.players.set(id, player);
+  room.teams[team].push(id);
+  playerToRoom.set(id, room.code);
+  scheduleSave();
+  return player;
+}
+
+function removePlayer(room, pid) {
+  const player = room.players.get(pid);
+  if (!player) return null;
+  if (player.disconnectTimer) clearTimeout(player.disconnectTimer);
+
+  // Remove from team
+  const arr = room.teams[player.team];
+  const idx = arr.indexOf(pid);
+  if (idx !== -1) arr.splice(idx, 1);
+
+  room.players.delete(pid);
+  playerToRoom.delete(pid);
+
+  // Empty room → destroy
+  if (room.players.size === 0) {
+    deleteRoom(room.code);
+    return null;
+  }
+
+  // Transfer host if needed
+  if (room.hostId === pid) {
+    let newHost = null;
+    for (const [id, p] of room.players) {
+      if (p.connected) { newHost = id; break; }
     }
-    playerSessions.delete(id);
+    room.hostId = newHost || room.players.keys().next().value;
   }
-  
-  timerCallbacks.delete(roomCode);
-  rooms.delete(room.code);
-  saveRooms();
+
+  // If the actor left mid-round, end the round
+  if (room.gameState === STATES.ROUND_ACTIVE && room.currentActorId === pid) {
+    _finalizeRound(room);
+    if (_roundEndHandler) _roundEndHandler(room);
+  }
+
+  scheduleSave();
   return room;
 }
 
-function movePlayerToTeam(room, playerId, newTeam) {
-  const player = room.players.get(playerId);
-  if (!player) return null;
-  
-  const oldTeam = player.team;
-  if (oldTeam === newTeam) return player;
-  
-  const oldIndex = room.teams[oldTeam].indexOf(playerId);
-  if (oldIndex > -1) {
-    room.teams[oldTeam].splice(oldIndex, 1);
-  }
-  
-  room.teams[newTeam].push(playerId);
+function movePlayerToTeam(room, pid, newTeam) {
+  if (newTeam !== 'A' && newTeam !== 'B') return null;
+  const player = room.players.get(pid);
+  if (!player || player.team === newTeam) return null;
+  const arr = room.teams[player.team];
+  const idx = arr.indexOf(pid);
+  if (idx !== -1) arr.splice(idx, 1);
+  room.teams[newTeam].push(pid);
   player.team = newTeam;
-  saveRooms();
-  
+  scheduleSave();
   return player;
 }
 
 function transferHost(room, newHostId) {
-  const newHost = room.players.get(newHostId);
-  if (!newHost) return null;
-  
+  const p = room.players.get(newHostId);
+  if (!p) return null;
   room.hostId = newHostId;
-  saveRooms();
-  return newHost;
+  scheduleSave();
+  return p;
 }
 
-function setMaxSkips(room, maxSkips) {
-  room.maxSkipsPerRound = maxSkips;
-  saveRooms();
-}
-
-function getPlayerRoom(playerId) {
-  const roomCode = playerSessions.get(playerId);
-  if (roomCode) {
-    return rooms.get(roomCode);
-  }
-  return null;
-}
-
-function removePlayerFromRoom(room, playerId) {
-  const player = room.players.get(playerId);
-  if (!player) return;
-
-  const teamIndex = room.teams[player.team].indexOf(playerId);
-  if (teamIndex > -1) {
-    room.teams[player.team].splice(teamIndex, 1);
-  }
-
-  room.players.delete(playerId);
-  playerSessions.delete(playerId);
-
-  if (room.hostId === playerId && room.players.size > 0) {
-    // Find a connected player to be host, or any player if none connected
-    let newHostId = null;
-    for (const [id, p] of room.players) {
-      if (p.connected) {
-        newHostId = id;
-        break;
-      }
-    }
-    if (!newHostId) {
-      newHostId = room.players.keys().next().value;
-    }
-    room.hostId = newHostId;
-  }
-
-  if (room.players.size === 0) {
-    if (room.timerInterval) {
-      clearInterval(room.timerInterval);
-    }
-    timerCallbacks.delete(room.code);
-    rooms.delete(room.code);
-    saveRooms();
-    return null;
-  }
-
-  saveRooms();
-  return room;
-}
-
-function handlePlayerDisconnect(room, playerId) {
-  const player = room.players.get(playerId);
-  if (!player) return;
-
-  player.connected = false;
-  player.socketId = null;
-
-  // DON'T pause timer - let the game continue
-  // Players can catch up when they reconnect
-
-  // Set timeout for removal (10 minutes)
-  player.disconnectTimeout = setTimeout(() => {
-    removePlayerFromRoom(room, playerId);
-  }, RECONNECT_GRACE_PERIOD);
-
-  saveRooms();
-  return player;
-}
-
-function handlePlayerReconnect(room, playerId, socketId) {
-  const player = room.players.get(playerId);
+// ============================================================
+// Connection lifecycle
+// ============================================================
+function playerConnect(room, pid, socketId) {
+  const player = room.players.get(pid);
   if (!player) return null;
-
-  if (player.disconnectTimeout) {
-    clearTimeout(player.disconnectTimeout);
-    player.disconnectTimeout = null;
+  if (player.disconnectTimer) {
+    clearTimeout(player.disconnectTimer);
+    player.disconnectTimer = null;
   }
-
   player.connected = true;
   player.socketId = socketId;
-
-  // If timer was paused (e.g., after server restart), resume it
-  if (room.gameState === 'roundActive' && room.timerPaused && room.currentActorId === playerId) {
-    resumeTimer(room);
-  }
-
-  saveRooms();
+  scheduleSave();
   return player;
 }
 
-function startGame(room, difficulty, language = 'en', bannedWords = []) {
+function playerDisconnect(room, pid) {
+  const player = room.players.get(pid);
+  if (!player) return null;
+  player.connected = false;
+  player.socketId = null;
+  // Grace period — remove after 10 min if they don't come back
+  player.disconnectTimer = setTimeout(() => {
+    player.disconnectTimer = null;
+    removePlayer(room, pid);
+  }, RECONNECT_GRACE_MS);
+  scheduleSave();
+  return player;
+}
+
+// ============================================================
+// Game flow
+// ============================================================
+function startGame(room, difficulty, language, bannedWords = []) {
+  if (!_transition(room, STATES.ROUND_SETUP)) return null;
   room.difficulty = difficulty;
-  room.language = language;
-  room.deck = getShuffledDeck(difficulty, language, bannedWords);
-  room.currentCardIndex = 0;
-  room.gameState = 'roundSetup';
+  room.language = language || 'en';
+  room.deck = getShuffledDeck(difficulty, room.language, bannedWords);
+  room.deckIndex = 0;
   room.scores = { A: 0, B: 0 };
   room.roundHistory = [];
-  saveRooms();
-  return room;
-}
-
-function startRound(room, actorId, timerDuration, onTimerEnd) {
-  // Clear any existing timer
-  if (room.timerInterval) {
-    clearInterval(room.timerInterval);
-    room.timerInterval = null;
-  }
-
-  room.currentActorId = actorId;
-  room.roundTimer = timerDuration;
-  room.roundTimeRemaining = timerDuration;
-  room.gameState = 'roundActive';
   room.currentRoundWords = [];
-  room.timerPaused = false;
-  room.skipsUsedThisRound = 0;
-
-  // Store callback for potential restart
-  if (onTimerEnd) {
-    timerCallbacks.set(room.code, onTimerEnd);
-  }
-
-  // Start the timer
-  room.timerInterval = setInterval(() => {
-    if (room.gameState === 'roundActive' && !room.timerPaused) {
-      room.roundTimeRemaining--;
-      if (room.roundTimeRemaining <= 0) {
-        endRound(room);
-        const callback = timerCallbacks.get(room.code);
-        if (callback) callback(room);
-      }
-    }
-  }, 1000);
-
-  saveRooms();
+  scheduleSave();
   return room;
 }
 
-// Restart timer after server restart (for active rounds)
-function restartRoundTimer(room, onTimerEnd) {
-  if (room.gameState !== 'roundActive') return;
-  if (room.timerInterval) return; // Already running
-  
-  if (onTimerEnd) {
-    timerCallbacks.set(room.code, onTimerEnd);
-  }
-
-  room.timerInterval = setInterval(() => {
-    if (room.gameState === 'roundActive' && !room.timerPaused) {
-      room.roundTimeRemaining--;
-      if (room.roundTimeRemaining <= 0) {
-        endRound(room);
-        const callback = timerCallbacks.get(room.code);
-        if (callback) callback(room);
-      }
-    }
-  }, 1000);
-}
-
-function pauseTimer(room) {
-  room.timerPaused = true;
-  saveRooms();
-}
-
-function resumeTimer(room) {
-  room.timerPaused = false;
-  saveRooms();
+function startRound(room, actorId, duration) {
+  if (!room.players.has(actorId)) return null;
+  if (!_transition(room, STATES.ROUND_ACTIVE)) return null;
+  room.currentActorId = actorId;
+  room.currentRoundWords = [];
+  room.skipsUsedThisRound = 0;
+  _startTimer(room, duration);
+  scheduleSave();
+  return room;
 }
 
 function getCurrentWord(room) {
-  if (room.currentCardIndex >= room.deck.length) {
-    return null;
-  }
-  return room.deck[room.currentCardIndex];
+  if (room.deckIndex >= room.deck.length) return null;
+  return room.deck[room.deckIndex];
 }
 
 function markCorrect(room) {
+  if (room.gameState !== STATES.ROUND_ACTIVE) return null;
   const word = getCurrentWord(room);
   if (!word) return null;
-
   const actor = room.players.get(room.currentActorId);
-  if (actor) {
-    room.scores[actor.team]++;
-  }
-
+  if (actor) room.scores[actor.team]++;
   room.currentRoundWords.push({ word, result: 'correct' });
-  room.currentCardIndex++;
-  saveRooms();
-
+  room.deckIndex++;
+  scheduleSave();
   return {
     word,
     result: 'correct',
     scores: { ...room.scores },
-    nextWord: getCurrentWord(room)
+    nextWord: getCurrentWord(room),
   };
 }
 
 function undoCorrect(room, wordIndex) {
-  if (wordIndex < 0 || wordIndex >= room.currentRoundWords.length) {
-    return null;
-  }
-
-  const wordEntry = room.currentRoundWords[wordIndex];
-  if (wordEntry.result !== 'correct') {
-    return null;
-  }
-
+  if (wordIndex < 0 || wordIndex >= room.currentRoundWords.length) return null;
+  const entry = room.currentRoundWords[wordIndex];
+  if (entry.result !== 'correct') return null;
   const actor = room.players.get(room.currentActorId);
-  if (actor) {
-    room.scores[actor.team] = Math.max(0, room.scores[actor.team] - 1);
-  }
-
-  room.currentRoundWords[wordIndex].result = 'cancelled';
-  saveRooms();
-
+  if (actor) room.scores[actor.team] = Math.max(0, room.scores[actor.team] - 1);
+  entry.result = 'cancelled';
+  scheduleSave();
   return {
-    word: wordEntry.word,
+    word: entry.word,
     wordIndex,
-    result: 'cancelled',
     scores: { ...room.scores },
-    currentRoundWords: [...room.currentRoundWords]
+    currentRoundWords: [...room.currentRoundWords],
   };
 }
 
 function undoHistoryWord(room, roundIndex, wordIndex) {
-  if (roundIndex < 0 || roundIndex >= room.roundHistory.length) {
-    return null;
-  }
-
-  const round = room.roundHistory[roundIndex];
-  if (wordIndex < 0 || wordIndex >= round.words.length) {
-    return null;
-  }
-
-  const wordEntry = round.words[wordIndex];
-  if (wordEntry.result !== 'correct') {
-    return null;
-  }
-
+  const round = room.roundHistory?.[roundIndex];
+  if (!round) return null;
+  const entry = round.words?.[wordIndex];
+  if (!entry || entry.result !== 'correct') return null;
   room.scores[round.actorTeam] = Math.max(0, room.scores[round.actorTeam] - 1);
-  round.words[wordIndex].result = 'cancelled';
+  entry.result = 'cancelled';
   round.correct = round.words.filter(w => w.result === 'correct').length;
-  saveRooms();
-
-  return {
-    word: wordEntry.word,
-    roundIndex,
-    wordIndex,
-    result: 'cancelled',
-    scores: { ...room.scores },
-    roundHistory: room.roundHistory
-  };
+  scheduleSave();
+  return { word: entry.word, roundIndex, wordIndex, scores: { ...room.scores } };
 }
 
 function markSkip(room) {
+  if (room.gameState !== STATES.ROUND_ACTIVE) return null;
   const word = getCurrentWord(room);
   if (!word) return null;
-
   if (room.skipsUsedThisRound >= room.maxSkipsPerRound) {
     return { error: 'noSkipsLeft', skipsUsed: room.skipsUsedThisRound, maxSkips: room.maxSkipsPerRound };
   }
-
   room.skipsUsedThisRound++;
   room.currentRoundWords.push({ word, result: 'skip' });
-  room.currentCardIndex++;
-  saveRooms();
-
+  room.deckIndex++;
+  scheduleSave();
   return {
     word,
     result: 'skip',
     scores: { ...room.scores },
     nextWord: getCurrentWord(room),
-    skipsRemaining: room.maxSkipsPerRound - room.skipsUsedThisRound
+    skipsRemaining: room.maxSkipsPerRound - room.skipsUsedThisRound,
   };
 }
 
 function removeCurrentWord(room) {
+  if (room.gameState !== STATES.ROUND_ACTIVE) return null;
   const word = getCurrentWord(room);
   if (!word) return null;
+  room.deck.splice(room.deckIndex, 1); // deckIndex now points to next word
+  scheduleSave();
+  return { word, nextWord: getCurrentWord(room) };
+}
 
-  room.deck.splice(room.currentCardIndex, 1);
-  saveRooms();
-
-  return {
-    word,
-    nextWord: getCurrentWord(room)
-  };
+/** Internal: push round to history and reset round state */
+function _finalizeRound(room) {
+  _clearTimer(room);
+  const actor = room.players.get(room.currentActorId);
+  if (room.currentRoundWords.length > 0 || room.currentActorId) {
+    room.roundHistory.push({
+      actor: actor?.name || 'Unknown',
+      actorTeam: actor?.team || 'A',
+      words: [...room.currentRoundWords],
+      correct: room.currentRoundWords.filter(w => w.result === 'correct').length,
+    });
+  }
+  room.currentActorId = null;
+  room.currentRoundWords = [];
+  room.roundEndsAt = null;
+  room.timerPaused = false;
+  room.pauseRemainingMs = null;
+  room.gameState = STATES.ROUND_SETUP;
+  scheduleSave();
 }
 
 function endRound(room) {
-  if (room.gameState !== 'roundActive') {
-    return room;
-  }
-
-  if (room.timerInterval) {
-    clearInterval(room.timerInterval);
-    room.timerInterval = null;
-  }
-
-  const actor = room.players.get(room.currentActorId);
-  room.roundHistory.push({
-    actor: actor ? actor.name : 'Unknown',
-    actorTeam: actor ? actor.team : 'A',
-    words: [...room.currentRoundWords],
-    correct: room.currentRoundWords.filter(w => w.result === 'correct').length
-  });
-
-  room.gameState = 'roundSetup';
-  room.currentActorId = null;
-  room.currentRoundWords = [];
-  room.timerPaused = false;
-  timerCallbacks.delete(room.code);
-  saveRooms();
-
-  return room;
-}
-
-// Force end round - for stuck scenarios
-function forceEndRound(room) {
-  if (room.timerInterval) {
-    clearInterval(room.timerInterval);
-    room.timerInterval = null;
-  }
-
-  if (room.currentRoundWords.length > 0 || room.currentActorId) {
-    const actor = room.players.get(room.currentActorId);
-    room.roundHistory.push({
-      actor: actor ? actor.name : 'Unknown',
-      actorTeam: actor ? actor.team : 'A',
-      words: [...room.currentRoundWords],
-      correct: room.currentRoundWords.filter(w => w.result === 'correct').length
-    });
-  }
-
-  room.gameState = 'roundSetup';
-  room.currentActorId = null;
-  room.currentRoundWords = [];
-  room.timerPaused = false;
-  room.roundTimeRemaining = 0;
-  timerCallbacks.delete(room.code);
-  saveRooms();
-
+  if (room.gameState !== STATES.ROUND_ACTIVE) return null;
+  _finalizeRound(room);
   return room;
 }
 
 function endGame(room) {
-  if (room.timerInterval) {
-    clearInterval(room.timerInterval);
-    room.timerInterval = null;
+  // Save active round to history if mid-round
+  if (room.gameState === STATES.ROUND_ACTIVE) {
+    const actor = room.players.get(room.currentActorId);
+    _clearTimer(room);
+    if (room.currentRoundWords.length > 0) {
+      room.roundHistory.push({
+        actor: actor?.name || 'Unknown',
+        actorTeam: actor?.team || 'A',
+        words: [...room.currentRoundWords],
+        correct: room.currentRoundWords.filter(w => w.result === 'correct').length,
+      });
+    }
   }
-  room.gameState = 'gameOver';
-  timerCallbacks.delete(room.code);
-  saveRooms();
+  _clearTimer(room);
+  room.gameState = STATES.GAME_OVER;
+  room.currentActorId = null;
+  room.currentRoundWords = [];
+  room.roundEndsAt = null;
+  room.timerPaused = false;
+  room.pauseRemainingMs = null;
+  scheduleSave();
   return room;
 }
 
 function resetGame(room) {
-  room.gameState = 'lobby';
+  _clearTimer(room);
+  room.gameState = STATES.LOBBY;
   room.deck = [];
-  room.currentCardIndex = 0;
+  room.deckIndex = 0;
   room.currentActorId = null;
   room.roundHistory = [];
   room.scores = { A: 0, B: 0 };
   room.currentRoundWords = [];
+  room.roundEndsAt = null;
   room.timerPaused = false;
-  room.roundTimeRemaining = 0;
-  if (room.timerInterval) {
-    clearInterval(room.timerInterval);
-    room.timerInterval = null;
-  }
-  timerCallbacks.delete(room.code);
-  saveRooms();
+  room.pauseRemainingMs = null;
+  scheduleSave();
   return room;
 }
 
-function getRoomState(room, forPlayerId = null) {
+function setMaxSkips(room, maxSkips) {
+  room.maxSkipsPerRound = maxSkips;
+  scheduleSave();
+}
+
+// ============================================================
+// Client-facing state snapshot
+// ============================================================
+function getClientState(room, forPlayerId = null) {
   const players = [];
-  for (const [id, player] of room.players) {
+  for (const [id, p] of room.players) {
     players.push({
       id,
-      name: player.name,
-      team: player.team,
-      connected: player.connected,
-      isHost: id === room.hostId
+      name: p.name,
+      team: p.team,
+      connected: p.connected,
+      isHost: id === room.hostId,
     });
   }
 
@@ -631,26 +597,31 @@ function getRoomState(room, forPlayerId = null) {
     hostId: room.hostId,
     players,
     teams: {
-      A: room.teams.A.map(id => room.players.get(id)?.name || 'Unknown'),
-      B: room.teams.B.map(id => room.players.get(id)?.name || 'Unknown')
+      A: room.teams.A.map(id => room.players.get(id)?.name || '?'),
+      B: room.teams.B.map(id => room.players.get(id)?.name || '?'),
     },
-    scores: room.scores,
+    scores: { ...room.scores },
     gameState: room.gameState,
     difficulty: room.difficulty,
     language: room.language,
     currentActorId: room.currentActorId,
-    currentActorName: room.currentActorId ? room.players.get(room.currentActorId)?.name : null,
-    roundTimeRemaining: room.roundTimeRemaining,
-    roundTimer: room.roundTimer,
+    currentActorName: room.currentActorId
+      ? room.players.get(room.currentActorId)?.name
+      : null,
+    // Timestamp-based timer info for client-side computation
+    timeRemaining: getTimeRemaining(room),
+    roundEndsAt: room.timerPaused ? null : room.roundEndsAt,
     timerPaused: room.timerPaused,
+    pauseRemainingMs: room.pauseRemainingMs,
+    serverTime: Date.now(),
     roundHistory: room.roundHistory,
-    cardsRemaining: room.deck.length - room.currentCardIndex,
+    cardsRemaining: room.deck.length - room.deckIndex,
     maxSkipsPerRound: room.maxSkipsPerRound,
-    skipsRemaining: room.maxSkipsPerRound - room.skipsUsedThisRound,
-    currentRoundWords: room.currentRoundWords // Always send for catch-up
+    skipsRemaining: room.maxSkipsPerRound - (room.skipsUsedThisRound || 0),
+    currentRoundWords: room.currentRoundWords,
   };
 
-  // Include current word if requester is the actor
+  // Only the actor sees the current word
   if (forPlayerId === room.currentActorId) {
     state.currentWord = getCurrentWord(room);
   }
@@ -658,35 +629,42 @@ function getRoomState(room, forPlayerId = null) {
   return state;
 }
 
+// ============================================================
+// Restart timers after server restart
+// ============================================================
+function restartTimers() {
+  for (const [code, room] of rooms) {
+    if (room.gameState !== STATES.ROUND_ACTIVE) continue;
+    if (room.timerPaused) {
+      console.log(`[timer] ${code}: paused (${Math.ceil((room.pauseRemainingMs || 0) / 1000)}s left)`);
+      continue;
+    }
+    if (room.roundEndsAt) {
+      const ms = room.roundEndsAt - Date.now();
+      if (ms > 0) {
+        _scheduleEnd(room, ms);
+        console.log(`[timer] ${code}: resumed (${Math.ceil(ms / 1000)}s left)`);
+      } else {
+        _finalizeRound(room);
+        if (_roundEndHandler) _roundEndHandler(room);
+        console.log(`[timer] ${code}: expired offline, ended round`);
+      }
+    }
+  }
+}
+
+// ============================================================
+// Exports
+// ============================================================
 module.exports = {
-  generatePlayerId,
-  createRoom,
-  getRoom,
-  getAllRooms,
-  closeRoom,
-  getPlayerRoom,
-  addPlayerToRoom,
-  removePlayerFromRoom,
-  movePlayerToTeam,
-  transferHost,
-  setMaxSkips,
-  handlePlayerDisconnect,
-  handlePlayerReconnect,
-  startGame,
-  startRound,
-  restartRoundTimer,
-  pauseTimer,
-  resumeTimer,
-  getCurrentWord,
-  markCorrect,
-  undoCorrect,
-  undoHistoryWord,
-  markSkip,
-  removeCurrentWord,
-  endRound,
-  forceEndRound,
-  endGame,
-  resetGame,
-  getRoomState,
-  saveRooms
+  STATES,
+  setRoundEndHandler,
+  createRoom, getRoom, getAllRooms, deleteRoom,
+  addPlayer, removePlayer, movePlayerToTeam, transferHost,
+  playerConnect, playerDisconnect,
+  startGame, startRound, getCurrentWord,
+  markCorrect, undoCorrect, undoHistoryWord, markSkip, removeCurrentWord,
+  endRound, endGame, resetGame,
+  setMaxSkips, pauseTimer, resumeTimer, getTimeRemaining,
+  getClientState, restartTimers, forceSave, scheduleSave,
 };
