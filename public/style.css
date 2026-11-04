@@ -1472,3 +1472,21 @@ body::before {
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .actor-buttons .btn { touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+
+/* Host: flip a word between counted / not counted */
+.history-word { display: inline-flex; align-items: center; gap: 4px; }
+.fix-btn {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  font-size: 0.8rem;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.fix-btn.remove { background: var(--danger); color: #fff; }
+.fix-btn.add { background: var(--success); color: #10251a; }
+.fix-btn:hover { filter: brightness(1.3); }

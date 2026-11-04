@@ -232,6 +232,25 @@ test('a public player id cannot be used to take a seat', async (t) => {
   assert.equal(res.member, false);
 });
 
+test('host fixes words both ways; guessers cannot', async (t) => {
+  const { host, others, all } = await roomWith(3);
+  t.after(() => closeAll(all));
+  const actor = others[0];
+  await host.call('start-game');
+  await host.call('update-settings', { maxSkips: 3 });
+  await host.call('start-round', { actorId: actor.state.you, seconds: 60 });
+  await until(() => actor.state?.round?.cardSeq !== undefined);
+  await actor.call('skip', { seq: actor.state.round.cardSeq });
+  await until(() => actor.state.round.words.length === 1);
+  assert.equal((await others[1].call('mark-word', { roundIndex: -1, wordIndex: 0, correct: true })).ok, false);
+  assert.ok((await host.call('mark-word', { roundIndex: -1, wordIndex: 0, correct: true })).ok);
+  await until(() => all.every(p => p.state.scores.B === 1 && p.state.round.words[0].result === 'correct'));
+  assert.equal(actor.state.round.skipsRemaining, 3, 'skip given back');
+  assert.ok((await host.call('mark-word', { roundIndex: -1, wordIndex: 0, correct: false })).ok);
+  await until(() => all.every(p => p.state.scores.B === 0));
+  assert.ok(host.notices.some(n => /not counted/.test(n)));
+});
+
 test('late joiner mid-round gets a team and no word', async (t) => {
   const { host, others, all } = await roomWith(2);
   await host.call('start-game');
