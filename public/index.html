@@ -2,15 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1a1a2e">
   <title>Why Are You Like This?</title>
   <script>
-    // Detect base path for subpath hosting
-    (function() {
-      const path = window.location.pathname;
-      const base = path.includes('/why_are_you_like_this') ? '/why_are_you_like_this/' : '/';
-      document.write('<base href="' + base + '">');
-    })();
+    // Assets are relative, so a sub-path must end with "/" (…/why_are_you_like_this → …/why_are_you_like_this/)
+    if (!/\/$|\.[a-z]+$/i.test(location.pathname)) location.replace(location.pathname + '/' + location.search);
   </script>
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -18,6 +15,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
+  <div id="conn-banner" class="conn-banner hidden" role="status">Reconnecting…</div>
+
   <div class="container">
     <header class="header">
       <h1 class="title">Why Are You<br><span class="title-accent">Like This?</span></h1>
@@ -27,19 +26,27 @@
     <!-- Landing Screen -->
     <div id="landing-screen" class="screen active">
       <div class="card">
-        <input type="text" id="player-name" placeholder="Your Name" maxlength="20" class="input-field">
-        
+        <div id="resume-box" class="resume-box hidden">
+          <button id="resume-btn" class="btn btn-primary">
+            <span class="btn-icon">↩️</span>
+            <span id="resume-label">Rejoin game</span>
+          </button>
+          <div class="divider"><span>or</span></div>
+        </div>
+
+        <input type="text" id="player-name" placeholder="Your Name" maxlength="20" class="input-field" autocomplete="nickname" dir="auto">
+
         <div class="button-group">
           <button id="create-btn" class="btn btn-primary">
             <span class="btn-icon">🎮</span>
             Create Game
           </button>
-          
+
           <div class="divider">
             <span>or</span>
           </div>
-          
-          <input type="text" id="room-code" placeholder="Room Code" maxlength="4" class="input-field input-code">
+
+          <input type="text" id="room-code" placeholder="Room Code" maxlength="4" class="input-field input-code" autocomplete="off" autocapitalize="characters" spellcheck="false">
           <button id="join-btn" class="btn btn-secondary">
             <span class="btn-icon">🚀</span>
             Join Game
@@ -54,13 +61,8 @@
         <div class="room-code-display">
           <span class="room-label">Room Code</span>
           <span id="display-room-code" class="room-code">----</span>
+          <button id="invite-btn" class="btn btn-secondary btn-small invite-btn">Copy invite link</button>
         </div>
-      </div>
-      
-      <div class="leave-room-container">
-        <button id="leave-room-btn" class="btn btn-secondary btn-small leave-btn">
-          Leave Room
-        </button>
       </div>
 
       <div class="teams-container">
@@ -73,13 +75,13 @@
           <ul id="team-b-list" class="player-list"></ul>
         </div>
       </div>
-      <p id="drag-hint" class="drag-hint hidden">Drag players to rearrange teams</p>
+      <p id="drag-hint" class="drag-hint hidden">Tap ⇄ (or drag) to switch a player's team</p>
 
       <div id="host-lobby-controls" class="host-controls hidden">
         <div class="language-selector">
           <label class="selector-label">Language</label>
           <div class="language-buttons">
-            <button class="lang-btn active" data-lang="en">English</button>
+            <button class="lang-btn" data-lang="en">English</button>
             <button class="lang-btn" data-lang="he">עברית</button>
           </div>
         </div>
@@ -87,18 +89,18 @@
         <div class="difficulty-selector">
           <label class="selector-label">Difficulty</label>
           <div class="difficulty-buttons">
-            <button class="diff-btn active" data-difficulty="easy">Easy</button>
+            <button class="diff-btn" data-difficulty="easy">Easy</button>
             <button class="diff-btn" data-difficulty="medium">Medium</button>
             <button class="diff-btn" data-difficulty="hard">Hard</button>
           </div>
         </div>
-        
+
         <div class="skips-selector">
           <label class="selector-label">Max Skips Per Round</label>
           <div class="skips-buttons">
             <button class="skip-limit-btn" data-skips="0">0</button>
             <button class="skip-limit-btn" data-skips="1">1</button>
-            <button class="skip-limit-btn active" data-skips="2">2</button>
+            <button class="skip-limit-btn" data-skips="2">2</button>
             <button class="skip-limit-btn" data-skips="3">3</button>
             <button class="skip-limit-btn" data-skips="999">∞</button>
           </div>
@@ -122,20 +124,26 @@
       </div>
 
       <div id="waiting-message" class="waiting-message">
-        Waiting for host to start...
+        <div id="settings-summary" class="settings-summary"></div>
+        Waiting for <span id="host-name">host</span> to start...
+      </div>
+
+      <div class="leave-room-container">
+        <button id="leave-room-btn" class="btn btn-secondary btn-small leave-btn">
+          Leave Room
+        </button>
       </div>
     </div>
 
     <!-- Game Screen -->
     <div id="game-screen" class="screen">
-      <!-- Score Display -->
       <div class="scoreboard">
         <div class="score team-a-score">
           <span class="score-label">Team A</span>
           <span id="score-a" class="score-value">0</span>
         </div>
         <div class="timer-display">
-          <div id="timer" class="timer">60</div>
+          <div id="timer" class="timer">--</div>
           <div id="timer-label" class="timer-label">seconds</div>
         </div>
         <div class="score team-b-score">
@@ -143,13 +151,16 @@
           <span id="score-b" class="score-value">0</span>
         </div>
       </div>
+      <div id="game-teams" class="game-teams"></div>
+
+      <div id="paused-banner" class="paused-banner hidden"></div>
 
       <!-- Round Setup (Host Only) -->
       <div id="round-setup" class="game-section hidden">
         <h2 class="section-title">Set Up Round</h2>
         <div class="setup-form">
           <div class="form-group">
-            <label class="form-label">Choose Actor</label>
+            <label class="form-label" for="actor-select">Choose Actor</label>
             <select id="actor-select" class="select-field">
               <option value="">Select a player...</option>
             </select>
@@ -158,7 +169,7 @@
             <label class="form-label">Timer Duration</label>
             <div class="timer-buttons">
               <button class="timer-btn" data-time="30">30s</button>
-              <button class="timer-btn active" data-time="60">60s</button>
+              <button class="timer-btn" data-time="60">60s</button>
               <button class="timer-btn" data-time="90">90s</button>
               <button class="timer-btn" data-time="120">120s</button>
             </div>
@@ -167,7 +178,7 @@
             Start Round
           </button>
         </div>
-        <p class="cards-remaining">Cards remaining: <span id="cards-remaining">50</span></p>
+        <p class="cards-remaining">Cards remaining: <span id="cards-remaining">0</span></p>
       </div>
 
       <!-- Waiting for Round Setup (Non-Host) -->
@@ -176,7 +187,7 @@
           <div class="loading-dots">
             <span></span><span></span><span></span>
           </div>
-          <p>Waiting for host to set up the round...</p>
+          <p id="waiting-setup-text">Waiting for the host to set up the round...</p>
         </div>
       </div>
 
@@ -184,20 +195,15 @@
       <div id="actor-view" class="game-section hidden">
         <div class="word-card">
           <span class="word-label">Your Word</span>
-          <span id="current-word" class="word-text">Loading...</span>
+          <span id="current-word" class="word-text" dir="auto">Loading...</span>
         </div>
         <div class="actor-buttons">
-          <button id="skip-btn" class="btn btn-skip">
-            Skip
-          </button>
-          <button id="correct-btn" class="btn btn-correct">
-            Correct!
-          </button>
+          <button id="skip-btn" class="btn btn-skip">Skip</button>
+          <button id="correct-btn" class="btn btn-correct">Correct!</button>
         </div>
         <div class="remove-word-container">
-          <button id="remove-word-btn" class="btn btn-remove">
-            Remove Word (Bad/Weird)
-          </button>
+          <button id="pause-btn" class="btn btn-secondary btn-small">Pause</button>
+          <button id="remove-word-btn" class="btn btn-remove">Remove Word (Bad/Weird)</button>
         </div>
         <div class="round-progress">
           <span id="round-correct">0</span> correct this round
@@ -208,26 +214,24 @@
       <div id="guesser-view" class="game-section hidden">
         <div class="guessing-card">
           <div class="actor-indicator">
-            <span id="current-actor-name">Player</span>
+            <span id="current-actor-name" dir="auto">Player</span>
             <span class="is-acting">is acting!</span>
           </div>
           <div class="guess-animation">
             <span>🎭</span>
           </div>
-          <p class="guess-hint">Watch and guess the word!</p>
+          <p id="guess-hint" class="guess-hint">Watch and guess the word!</p>
         </div>
         <div class="round-progress">
           <span id="guesser-round-correct">0</span> correct this round
         </div>
       </div>
 
-      <!-- Current Round Progress -->
       <div id="current-round-section" class="history-section current-round hidden">
         <h3 class="history-title">Current Round</h3>
         <div id="current-round-words" class="current-words"></div>
       </div>
 
-      <!-- Round History -->
       <div class="history-section">
         <h3 class="history-title">Round History</h3>
         <div id="round-history" class="history-list">
@@ -235,20 +239,12 @@
         </div>
       </div>
 
-      <!-- Host Game Controls -->
       <div id="host-game-controls" class="host-game-controls hidden">
-        <button id="end-round-btn" class="btn btn-secondary btn-small hidden">
-          End Round Early
-        </button>
-        <button id="force-end-round-btn" class="btn btn-warning btn-small hidden">
-          Force End (Stuck?)
-        </button>
-        <button id="end-game-btn" class="btn btn-danger btn-small">
-          End Game
-        </button>
+        <button id="host-pause-btn" class="btn btn-secondary btn-small hidden">Pause</button>
+        <button id="end-round-btn" class="btn btn-warning btn-small hidden">End Round Now</button>
+        <button id="end-game-btn" class="btn btn-danger btn-small">End Game</button>
       </div>
 
-      <!-- Leave Game Button (all players) -->
       <div class="leave-game-container">
         <button id="leave-game-btn" class="btn btn-secondary btn-small leave-btn">
           Leave Game
@@ -275,18 +271,16 @@
         <button id="play-again-btn" class="btn btn-primary btn-large hidden">
           Play Again
         </button>
+        <p id="play-again-wait" class="guess-hint hidden">Waiting for the host to start another game…</p>
         <button id="back-to-lobby-btn" class="btn btn-secondary">
-          Back to Lobby
+          Leave Room
         </button>
       </div>
     </div>
   </div>
 
-  <!-- Toast Notifications -->
-  <div id="toast-container" class="toast-container"></div>
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
-  <script src="socket.io/socket.io.js"></script>
   <script src="client.js"></script>
 </body>
 </html>
-

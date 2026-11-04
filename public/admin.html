@@ -4,14 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Admin - Why Are You Like This?</title>
-  <script>
-    // Detect base path for subpath hosting
-    (function() {
-      const path = window.location.pathname;
-      const base = path.includes('/why_are_you_like_this') ? '/why_are_you_like_this/' : '/';
-      document.write('<base href="' + base + '">');
-    })();
-  </script>
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -328,241 +320,147 @@
       <div id="rooms-container" class="rooms-list">
         <div class="no-rooms">No active rooms</div>
       </div>
+
+      <h2 style="margin: 30px 0 15px; color: var(--text-secondary);">Removed Words</h2>
+      <div id="banned-container" class="room-players"></div>
     </div>
   </div>
 
   <div id="toast-container" class="toast-container"></div>
 
-  <script src="socket.io/socket.io.js"></script>
   <script>
-    // Auto-detect base path for subpath hosting
-    const basePath = window.location.pathname.includes('/why_are_you_like_this') 
-      ? '/why_are_you_like_this' 
-      : '';
-    const socket = io({
-      path: basePath + '/socket.io'
-    });
-    
-    // DOM Elements
-    const loginScreen = document.getElementById('login-screen');
-    const adminScreen = document.getElementById('admin-screen');
-    const loginForm = document.getElementById('login-form');
-    const passwordInput = document.getElementById('password-input');
-    const loginError = document.getElementById('login-error');
-    const totalRooms = document.getElementById('total-rooms');
-    const totalPlayers = document.getElementById('total-players');
-    const gamesInProgress = document.getElementById('games-in-progress');
-    const roomsContainer = document.getElementById('rooms-container');
-    const refreshBtn = document.getElementById('refresh-btn');
-    const logoutBtn = document.getElementById('logout-btn');
-    const toastContainer = document.getElementById('toast-container');
-    
-    // Auth state
-    let adminToken = localStorage.getItem('adminToken');
-    
+    const basePath = window.location.pathname.replace(/[^/]*$/, '');
+    const $ = (id) => document.getElementById(id);
+    const loginScreen = $('login-screen');
+    const adminScreen = $('admin-screen');
+    const loginError = $('login-error');
+    let adminToken = sessionStorage.getItem('adminToken');
+    let pollTimer = null;
+
+    const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
     function showToast(message, type = 'info') {
-      const toast = document.createElement('div');
-      toast.className = `toast ${type}`;
-      toast.textContent = message;
-      toastContainer.appendChild(toast);
-      setTimeout(() => toast.remove(), 3000);
+      const t = document.createElement('div');
+      t.className = `toast ${type}`;
+      t.textContent = message;
+      $('toast-container').appendChild(t);
+      setTimeout(() => t.remove(), 3000);
     }
-    
+
+    async function api(path, { method = 'GET', body } = {}) {
+      const res = await fetch(basePath + 'api/admin/' + path, {
+        method,
+        headers: { 'Content-Type': 'application/json', ...(adminToken ? { Authorization: 'Bearer ' + adminToken } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401 && path !== 'login') { logout(true); throw new Error('Session expired'); }
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+
     function showLogin() {
+      clearInterval(pollTimer);
       loginScreen.classList.remove('hidden');
       adminScreen.classList.remove('active');
     }
-    
+
     function showAdmin() {
       loginScreen.classList.add('hidden');
       adminScreen.classList.add('active');
-      fetchRooms();
+      refresh();
+      clearInterval(pollTimer);
+      pollTimer = setInterval(refresh, 5000);
     }
-    
+
     async function login(password) {
       try {
-        const response = await fetch(basePath + '/api/admin/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password })
-        });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-          adminToken = data.token;
-          localStorage.setItem('adminToken', adminToken);
-          loginError.style.display = 'none';
-          showAdmin();
-          showToast('Logged in successfully', 'success');
-        } else {
-          loginError.textContent = data.message || 'Invalid password';
-          loginError.style.display = 'block';
-        }
-      } catch (err) {
-        loginError.textContent = 'Connection error. Please try again.';
+        const data = await api('login', { method: 'POST', body: { password } });
+        adminToken = data.token;
+        sessionStorage.setItem('adminToken', adminToken);
+        loginError.style.display = 'none';
+        showAdmin();
+      } catch (e) {
+        loginError.textContent = e.message;
         loginError.style.display = 'block';
       }
     }
-    
-    async function verifyToken() {
-      if (!adminToken) {
-        showLogin();
-        return;
-      }
-      
-      try {
-        const response = await fetch(basePath + '/api/admin/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: adminToken })
-        });
-        
-        const data = await response.json();
-        
-        if (data.valid) {
-          showAdmin();
-        } else {
-          localStorage.removeItem('adminToken');
-          adminToken = null;
-          showLogin();
-        }
-      } catch (err) {
-        showLogin();
-      }
-    }
-    
-    async function logout() {
-      try {
-        await fetch(basePath + '/api/admin/logout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: adminToken })
-        });
-      } catch (err) {
-        // Ignore errors
-      }
-      
-      localStorage.removeItem('adminToken');
+
+    function logout(expired) {
+      if (!expired && adminToken) api('logout', { method: 'POST' }).catch(() => {});
+      sessionStorage.removeItem('adminToken');
       adminToken = null;
       showLogin();
-      showToast('Logged out', 'info');
+      if (expired) showToast('Session expired. Please log in again.', 'error');
     }
-    
-    function getStateLabel(state) {
-      const labels = {
-        lobby: 'Lobby',
-        playing: 'Playing',
-        roundSetup: 'Round Setup',
-        roundActive: 'Round Active',
-        gameOver: 'Game Over'
-      };
-      return labels[state] || state;
-    }
-    
+
+    const STATE_LABELS = { lobby: 'Lobby', roundSetup: 'Between rounds', roundActive: 'Round active', gameOver: 'Game over' };
+
     function renderRooms(data) {
-      totalRooms.textContent = data.stats.totalRooms;
-      totalPlayers.textContent = data.stats.totalPlayers;
-      gamesInProgress.textContent = data.stats.gamesInProgress;
-      
-      if (data.rooms.length === 0) {
-        roomsContainer.innerHTML = '<div class="no-rooms">No active rooms</div>';
-        return;
-      }
-      
-      roomsContainer.innerHTML = data.rooms.map(room => `
-        <div class="room-card" data-room="${room.code}">
+      $('total-rooms').textContent = data.stats.rooms;
+      $('total-players').textContent = `${data.stats.online}/${data.stats.players}`;
+      $('games-in-progress').textContent = data.stats.playing;
+      const c = $('rooms-container');
+      if (!data.rooms.length) { c.innerHTML = '<div class="no-rooms">No active rooms</div>'; return; }
+      c.innerHTML = data.rooms.map(room => `
+        <div class="room-card">
           <div class="room-header">
-            <span class="room-code-badge">${room.code}</span>
-            <span class="room-state ${room.gameState}">${getStateLabel(room.gameState)}</span>
+            <span class="room-code-badge">${esc(room.code)}</span>
+            <span class="room-state ${esc(room.gameState)}">${esc(STATE_LABELS[room.gameState] || room.gameState)}</span>
           </div>
-          
           <div class="room-info">
-            <div class="room-info-item">
-              <span class="room-info-label">Difficulty:</span>
-              <span>${room.difficulty}</span>
-            </div>
-            <div class="room-info-item">
-              <span class="room-info-label">Cards Left:</span>
-              <span>${room.cardsRemaining}</span>
-            </div>
-            <div class="room-info-item">
-              <span class="room-info-label">Score:</span>
-              <span style="color: var(--team-a)">A: ${room.scores.A}</span> / 
-              <span style="color: var(--team-b)">B: ${room.scores.B}</span>
-            </div>
-            <div class="room-info-item">
-              <span class="room-info-label">Players:</span>
-              <span>${room.playerCount} (${room.connectedCount} online)</span>
-            </div>
+            <div class="room-info-item"><span class="room-info-label">Deck:</span><span>${esc(room.settings.language)} / ${esc(room.settings.difficulty)}</span></div>
+            <div class="room-info-item"><span class="room-info-label">Cards left:</span><span>${esc(room.cardsRemaining)}</span></div>
+            <div class="room-info-item"><span class="room-info-label">Score:</span>
+              <span style="color: var(--team-a)">A: ${esc(room.scores.A)}</span> /
+              <span style="color: var(--team-b)">B: ${esc(room.scores.B)}</span></div>
+            <div class="room-info-item"><span class="room-info-label">Rounds:</span><span>${esc(room.rounds)}</span></div>
           </div>
-          
           <div class="room-players">
-            ${room.players.map(p => `
-              <span class="player-badge team-${p.team.toLowerCase()} ${p.connected ? '' : 'disconnected'} ${p.isHost ? 'host' : ''}">
-                ${p.name}${!p.connected ? ' (offline)' : ''}
-              </span>
-            `).join('')}
+            ${room.players.map(p => `<span class="player-badge team-${p.team === 'B' ? 'b' : 'a'} ${p.connected ? '' : 'disconnected'} ${p.isHost ? 'host' : ''}">${esc(p.name)}${p.connected ? '' : ' (offline)'}</span>`).join('')}
           </div>
-          
           <div class="room-actions">
-            <button class="btn btn-danger btn-small" onclick="closeRoom('${room.code}')">
-              Close Room
-            </button>
+            <button class="btn btn-danger btn-small" data-close="${esc(room.code)}">Close Room</button>
           </div>
-        </div>
-      `).join('');
+        </div>`).join('');
     }
-    
-    function fetchRooms() {
-      socket.emit('admin-get-rooms', { token: adminToken });
+
+    function renderBanned(banned) {
+      const c = $('banned-container');
+      const items = Object.entries(banned).flatMap(([lang, words]) => words.map(w => ({ lang, w })));
+      if (!items.length) { c.innerHTML = '<div class="no-rooms">None</div>'; return; }
+      c.innerHTML = items.map(({ lang, w }) =>
+        `<span class="player-badge">${esc(lang)}: ${esc(w)} <button class="btn btn-small" data-unban="${esc(lang)}" data-word="${esc(w)}" style="width:auto;padding:2px 8px">restore</button></span>`).join('');
     }
-    
-    function closeRoom(roomCode) {
-      if (confirm(`Are you sure you want to close room ${roomCode}? All players will be disconnected.`)) {
-        socket.emit('admin-close-room', { roomCode, token: adminToken });
+
+    async function refresh() {
+      try {
+        const [rooms, banned] = await Promise.all([api('rooms'), api('banned')]);
+        renderRooms(rooms);
+        renderBanned(banned);
+      } catch (e) { if (adminToken) showToast(e.message, 'error'); }
+    }
+
+    document.addEventListener('click', async (e) => {
+      const close = e.target.closest('[data-close]');
+      if (close) {
+        const code = close.dataset.close;
+        if (!confirm(`Close room ${code}? All players will be sent back to the start screen.`)) return;
+        try { await api(`rooms/${encodeURIComponent(code)}/close`, { method: 'POST' }); showToast(`Room ${code} closed`, 'success'); refresh(); }
+        catch (err) { showToast(err.message, 'error'); }
       }
-    }
-    
-    // Socket events
-    socket.on('admin-rooms-data', (data) => {
-      renderRooms(data);
-    });
-    
-    socket.on('admin-room-closed', (data) => {
-      showToast(`Room ${data.roomCode} closed`, 'success');
-      fetchRooms();
-    });
-    
-    socket.on('admin-auth-required', () => {
-      localStorage.removeItem('adminToken');
-      adminToken = null;
-      showLogin();
-      showToast('Session expired. Please login again.', 'error');
-    });
-    
-    socket.on('error', (data) => {
-      showToast(data.message, 'error');
-    });
-    
-    // Event listeners
-    loginForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      login(passwordInput.value);
-    });
-    
-    refreshBtn.addEventListener('click', fetchRooms);
-    logoutBtn.addEventListener('click', logout);
-    
-    // Auto-refresh every 5 seconds when logged in
-    setInterval(() => {
-      if (adminToken) {
-        fetchRooms();
+      const unban = e.target.closest('[data-unban]');
+      if (unban) {
+        try { await api('unban', { method: 'POST', body: { language: unban.dataset.unban, word: unban.dataset.word } }); refresh(); }
+        catch (err) { showToast(err.message, 'error'); }
       }
-    }, 5000);
-    
-    // Initial check
-    verifyToken();
+    });
+
+    $('login-form').addEventListener('submit', (e) => { e.preventDefault(); login($('password-input').value); });
+    $('refresh-btn').addEventListener('click', refresh);
+    $('logout-btn').addEventListener('click', () => logout(false));
+
+    if (adminToken) showAdmin(); else showLogin();
   </script>
 </body>
 </html>

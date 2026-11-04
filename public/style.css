@@ -1395,3 +1395,80 @@ body::before {
   }
 }
 
+
+/* ===== v2 additions ===== */
+.conn-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 1100;
+  padding: 8px 16px;
+  padding-top: max(8px, env(safe-area-inset-top));
+  text-align: center;
+  font-weight: 700;
+  background: var(--danger);
+  color: #fff;
+}
+
+.resume-box { margin-bottom: 15px; }
+
+.invite-btn { margin-top: 10px; width: auto; }
+
+.player-item .player-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.mini-btn {
+  flex: none;
+  width: 30px; height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.12);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.mini-btn:hover { background: rgba(255,255,255,0.22); }
+.mini-btn.danger { color: var(--danger); }
+
+.team.drag-over { outline: 2px dashed var(--accent-gold); outline-offset: 4px; }
+
+.settings-summary {
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  text-transform: capitalize;
+}
+
+.game-teams {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: -10px 0 16px;
+}
+.roster { display: flex; flex-wrap: wrap; gap: 4px; }
+.roster.roster-b { justify-content: flex-end; }
+.roster-chip {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.08);
+}
+.roster.roster-a .roster-chip { border-left: 3px solid var(--team-a); }
+.roster.roster-b .roster-chip { border-right: 3px solid var(--team-b); }
+.roster-chip.offline { opacity: 0.4; text-decoration: line-through; }
+.roster-chip.you { background: rgba(255,255,255,0.18); }
+
+.paused-banner {
+  text-align: center;
+  font-weight: 800;
+  padding: 10px;
+  margin-bottom: 14px;
+  border-radius: var(--border-radius-sm);
+  background: rgba(254, 202, 87, 0.15);
+  color: var(--accent-gold);
+}
+
+.remove-word-container { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.remove-word-container .btn { width: auto; }
+
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.actor-buttons .btn { touch-action: manipulation; user-select: none; -webkit-user-select: none; }

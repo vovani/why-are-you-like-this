@@ -1,911 +1,738 @@
 'use strict';
 
 // ============================================================
-// Socket setup
+// Identity & session
+//
+// Each tab gets its own secret token (sessionStorage), so two tabs = two
+// players and a reload keeps your seat. The last session is also mirrored to
+// localStorage so a phone that dropped the tab can rejoin with one tap.
 // ============================================================
-const basePath = window.location.pathname.includes('/why_are_you_like_this')
-  ? '/why_are_you_like_this'
-  : '';
+const SS = safeStorage(() => window.sessionStorage);
+const LS = safeStorage(() => window.localStorage);
 
-const socket = io({
-  path: basePath + '/socket.io',
-  reconnection: true,
-  reconnectionAttempts: Infinity,
-  reconnectionDelay: 1000,
-  reconnectionDelayMax: 5000,
-  timeout: 60000,
-  transports: ['websocket', 'polling'],
-});
+function safeStorage(get) {
+  try {
+    const s = get();
+    const k = '__t';
+    s.setItem(k, '1'); s.removeItem(k);
+    return s;
+  } catch {
+    const m = new Map();
+    return { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k) };
+  }
+}
 
-// ============================================================
-// State
-// ============================================================
-let playerId = localStorage.getItem('playerId');
-let roomCode = localStorage.getItem('roomCode');
-let playerName = localStorage.getItem('playerName');
-let isHost = false;
-let currentState = null;
+function randomToken() {
+  const a = new Uint8Array(24);
+  crypto.getRandomValues(a);
+  return Array.from(a, b => b.toString(16).padStart(2, '0')).join('');
+}
 
-// UI selection state
-let selectedDifficulty = 'easy';
-let selectedTimer = 60;
-let selectedLanguage = 'en';
-let selectedMaxSkips = 2;
-let currentRoundWordsList = [];
-let skipsRemaining = 2;
+let token = SS.getItem('wayl.token');
+if (!token) { token = randomToken(); SS.setItem('wayl.token', token); }
+let roomCode = SS.getItem('wayl.room');
+let state = null;
 
-// Timestamp-based timer (computed client-side)
-let timerEndsAtLocal = null; // server's roundEndsAt, adjusted for clock skew
-let timerIsPaused = false;
-let pauseRemainingSec = 0;
-let timerTick = null;
-
-// Debounce disconnect toasts (suppress if they reconnect within 10 s)
-const pendingDisconnectToasts = new Map();
-
-// Generate stable player ID
-if (!playerId) {
-  playerId = 'p_' + Math.random().toString(36).substring(2, 15);
-  localStorage.setItem('playerId', playerId);
+function saveSession(code) {
+  roomCode = code;
+  if (code) {
+    SS.setItem('wayl.room', code);
+    LS.setItem('wayl.last', JSON.stringify({ code, token, name: playerNameInput.value.trim(), at: Date.now() }));
+  } else {
+    SS.removeItem('wayl.room');
+    try {
+      const last = JSON.parse(LS.getItem('wayl.last') || 'null');
+      if (last && last.token === token) LS.removeItem('wayl.last');
+    } catch { LS.removeItem('wayl.last'); }
+  }
 }
 
 // ============================================================
-// DOM References
+// Connection: one WebSocket per room, to that room's Durable Object.
+// Works at "/" or under any sub-path (e.g. /why_are_you_like_this/).
 // ============================================================
-const screens = {
-  landing: document.getElementById('landing-screen'),
-  lobby: document.getElementById('lobby-screen'),
-  game: document.getElementById('game-screen'),
-  gameover: document.getElementById('gameover-screen'),
-};
+const basePath = window.location.pathname.replace(/[^/]*$/, '');
 
-// Landing
-const playerNameInput = document.getElementById('player-name');
-const roomCodeInput = document.getElementById('room-code');
-const createBtn = document.getElementById('create-btn');
-const joinBtn = document.getElementById('join-btn');
+class Conn {
+  constructor() {
+    this.ws = null;
+    this.code = null;
+    this.joinName = null;   // set only while joining a room for the first time
+    this.wanted = false;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.handlers = {};
+    this.retries = 0;
+    this.lastPong = 0;
+    this.pinger = null;
+  }
 
-// Lobby
-const displayRoomCode = document.getElementById('display-room-code');
-const teamAList = document.getElementById('team-a-list');
-const teamBList = document.getElementById('team-b-list');
-const teamADrop = document.getElementById('team-a-drop');
-const teamBDrop = document.getElementById('team-b-drop');
-const dragHint = document.getElementById('drag-hint');
-const hostLobbyControls = document.getElementById('host-lobby-controls');
-const waitingMessage = document.getElementById('waiting-message');
-const startGameBtn = document.getElementById('start-game-btn');
-const difficultyBtns = document.querySelectorAll('.diff-btn');
-const languageBtns = document.querySelectorAll('.lang-btn');
-const skipLimitBtns = document.querySelectorAll('.skip-limit-btn');
-const leaveRoomBtn = document.getElementById('leave-room-btn');
-const transferHostSelect = document.getElementById('transfer-host-select');
-const transferHostBtn = document.getElementById('transfer-host-btn');
-const leaveGameBtn = document.getElementById('leave-game-btn');
+  on(type, fn) { this.handlers[type] = fn; }
+  _emit(type, data) { this.handlers[type]?.(data); }
+  get open() { return this.ws?.readyState === WebSocket.OPEN; }
 
-// Game
-const scoreA = document.getElementById('score-a');
-const scoreB = document.getElementById('score-b');
-const timerDisplay = document.getElementById('timer');
-const roundSetup = document.getElementById('round-setup');
-const waitingSetup = document.getElementById('waiting-setup');
-const actorView = document.getElementById('actor-view');
-const guesserView = document.getElementById('guesser-view');
-const actorSelect = document.getElementById('actor-select');
-const timerBtns = document.querySelectorAll('.timer-btn');
-const startRoundBtn = document.getElementById('start-round-btn');
-const cardsRemaining = document.getElementById('cards-remaining');
-const currentWord = document.getElementById('current-word');
-const correctBtn = document.getElementById('correct-btn');
-const skipBtn = document.getElementById('skip-btn');
-const removeWordBtn = document.getElementById('remove-word-btn');
-const roundCorrect = document.getElementById('round-correct');
-const guesserRoundCorrect = document.getElementById('guesser-round-correct');
-const currentActorName = document.getElementById('current-actor-name');
-const roundHistory = document.getElementById('round-history');
-const hostGameControls = document.getElementById('host-game-controls');
-const endRoundBtn = document.getElementById('end-round-btn');
-const forceEndRoundBtn = document.getElementById('force-end-round-btn');
-const endGameBtn = document.getElementById('end-game-btn');
-const currentRoundSection = document.getElementById('current-round-section');
-const currentRoundWordsEl = document.getElementById('current-round-words');
+  connect(code, joinName = null) {
+    this.disconnect();
+    this.code = code;
+    this.joinName = joinName;
+    this.wanted = true;
+    this._dial();
+  }
 
-// Game Over
-const finalScoreA = document.getElementById('final-score-a');
-const finalScoreB = document.getElementById('final-score-b');
-const winnerAnnouncement = document.getElementById('winner-announcement');
-const playAgainBtn = document.getElementById('play-again-btn');
-const backToLobbyBtn = document.getElementById('back-to-lobby-btn');
+  disconnect() {
+    this.wanted = false;
+    const ws = this.ws;
+    this.ws = null;
+    clearInterval(this.pinger);
+    if (ws) { ws.onclose = null; try { ws.close(1000); } catch { /* ignore */ } }
+    this._failPending('closed');
+  }
 
-// Toast
-const toastContainer = document.getElementById('toast-container');
+  _dial() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}${basePath}ws?room=${encodeURIComponent(this.code)}`);
+    this.ws = ws;
+    ws.onopen = async () => {
+      this.lastPong = Date.now();
+      clearInterval(this.pinger);
+      // "ping" is answered by Cloudflare without waking the room; a silent
+      // socket (phone changed network) is dropped and redialed.
+      this.pinger = setInterval(() => {
+        if (Date.now() - this.lastPong > 35000) { try { ws.close(); } catch { /* ignore */ } return; }
+        try { ws.send('ping'); } catch { /* ignore */ }
+      }, 15000);
+      const res = await this.call('hello', { token, name: this.joinName || undefined });
+      if (res.ok) { this.retries = 0; this.joinName = null; }
+      this._emit('hello', res);
+    };
+    ws.onmessage = (e) => {
+      if (e.data === 'pong') { this.lastPong = Date.now(); return; }
+      let msg;
+      try { msg = JSON.parse(e.data); } catch { return; }
+      this.lastPong = Date.now();
+      if (msg.t === 'ack') {
+        const cb = this.pending.get(msg.id);
+        if (cb) { this.pending.delete(msg.id); cb(msg); }
+        return;
+      }
+      if (msg.t === 'bye') this.wanted = false;
+      this._emit(msg.t, msg);
+    };
+    ws.onclose = () => {
+      clearInterval(this.pinger);
+      this._failPending('closed');
+      if (this.ws !== ws) return;
+      this._emit('down');
+      if (!this.wanted) return;
+      const delay = Math.min(4000, 300 * 2 ** this.retries++) + Math.random() * 300;
+      setTimeout(() => { if (this.wanted && this.ws === ws) this._dial(); }, delay);
+    };
+  }
 
-// Restore saved name
-if (playerName) playerNameInput.value = playerName;
+  /** Redial right away (tab became visible again). */
+  poke() {
+    if (this.wanted && (!this.ws || this.ws.readyState > WebSocket.OPEN)) { this.retries = 0; this._dial(); }
+  }
+
+  _failPending(error) {
+    for (const cb of this.pending.values()) cb({ ok: false, error });
+    this.pending.clear();
+  }
+
+  call(ev, p = {}) {
+    return new Promise((resolve) => {
+      if (!this.open) return resolve({ ok: false, error: 'offline' });
+      const id = this.nextId++;
+      const timer = setTimeout(() => { this.pending.delete(id); resolve({ ok: false, error: 'timeout' }); }, 8000);
+      this.pending.set(id, (res) => { clearTimeout(timer); resolve(res); });
+      this.ws.send(JSON.stringify({ id, ev, p }));
+    });
+  }
+}
+
+const conn = new Conn();
+
+async function send(event, payload = {}) {
+  const res = await conn.call(event, payload);
+  if (!res.ok) {
+    if (res.error === 'offline' || res.error === 'closed') toast('Not connected — retrying…', 'error');
+    else if (res.error === 'timeout') toast('Server did not answer, try again', 'error');
+    else toast(res.error, 'error');
+  }
+  return res;
+}
+
+async function api(path, body) {
+  try {
+    const res = await fetch(basePath + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    return await res.json();
+  } catch {
+    return { ok: false, error: 'Network error, try again' };
+  }
+}
 
 // ============================================================
-// Utility
+// DOM
 // ============================================================
+const $ = (id) => document.getElementById(id);
+const screens = { landing: $('landing-screen'), lobby: $('lobby-screen'), game: $('game-screen'), gameover: $('gameover-screen') };
+
+const connBanner = $('conn-banner');
+const playerNameInput = $('player-name');
+const roomCodeInput = $('room-code');
+const resumeBox = $('resume-box');
+const resumeLabel = $('resume-label');
+
+const teamLists = { A: $('team-a-list'), B: $('team-b-list') };
+const teamDrops = [$('team-a-drop'), $('team-b-drop')];
+const transferHostSelect = $('transfer-host-select');
+const actorSelect = $('actor-select');
+const timerDisplay = $('timer');
+const currentWordEl = $('current-word');
+const correctBtn = $('correct-btn');
+const skipBtn = $('skip-btn');
+const removeWordBtn = $('remove-word-btn');
+const pauseBtn = $('pause-btn');
+const hostPauseBtn = $('host-pause-btn');
+
+const show = (el, on) => el.classList.toggle('hidden', !on);
+
 function showScreen(name) {
-  Object.values(screens).forEach(s => s.classList.remove('active'));
-  screens[name].classList.add('active');
+  for (const [k, el] of Object.entries(screens)) el.classList.toggle('active', k === name);
 }
 
-function showToast(msg, type = 'info') {
+function toast(msg, type = 'info') {
+  if (!msg) return;
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   el.textContent = msg;
-  toastContainer.appendChild(el);
+  $('toast-container').appendChild(el);
   setTimeout(() => el.remove(), 3000);
 }
 
-// ============================================================
-// Timer (timestamp-based, computed locally)
-//
-// The server sends roundEndsAt (absolute timestamp) and serverTime.
-// We adjust for clock skew once and then count down locally.
-// No polling, no sync events needed.
-// ============================================================
-function syncTimer(state) {
-  if (!state) return;
-  timerIsPaused = !!state.timerPaused;
-
-  if (timerIsPaused) {
-    timerEndsAtLocal = null;
-    pauseRemainingSec = state.pauseRemainingMs
-      ? Math.ceil(state.pauseRemainingMs / 1000)
-      : 0;
-  } else if (state.roundEndsAt && state.serverTime) {
-    // Adjust server timestamp to local clock
-    const offset = state.serverTime - Date.now();
-    timerEndsAtLocal = state.roundEndsAt - offset;
-    pauseRemainingSec = 0;
-  } else {
-    timerEndsAtLocal = null;
-    pauseRemainingSec = state.timeRemaining || 0;
-  }
-
-  startTimerTick();
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
 }
 
-function startTimerTick() {
-  if (timerTick) clearInterval(timerTick);
-  renderTimer();
-  timerTick = setInterval(renderTimer, 250); // 4 Hz is plenty
+// Restore name / invite code
+playerNameInput.value = LS.getItem('wayl.name') || '';
+const inviteCode = new URLSearchParams(location.search).get('room');
+if (inviteCode) roomCodeInput.value = inviteCode.toUpperCase().slice(0, 4);
+
+function renderResume() {
+  let last = null;
+  try { last = JSON.parse(LS.getItem('wayl.last') || 'null'); } catch { /* ignore */ }
+  const fresh = last && Date.now() - last.at < 6 * 60 * 60 * 1000;
+  const offer = fresh && !roomCode && last.token !== token;
+  show(resumeBox, !!offer);
+  if (offer) resumeLabel.textContent = `Rejoin ${last.code}${last.name ? ' as ' + last.name : ''}`;
+  return offer ? last : null;
 }
 
-function stopTimerTick() {
-  if (timerTick) { clearInterval(timerTick); timerTick = null; }
+// ============================================================
+// Timer (server sends absolute endsAt + its clock; we correct for skew)
+// ============================================================
+let clockOffset = 0; // serverTime - localTime
+let lastTimerSecond = null;
+
+function remainingMs() {
+  const r = state?.round;
+  if (!r) return 0;
+  if (r.paused) return r.remainingMs;
+  return Math.max(0, r.endsAt - (Date.now() + clockOffset));
 }
 
 function renderTimer() {
-  let remaining;
-  if (timerIsPaused) {
-    remaining = pauseRemainingSec;
-  } else if (timerEndsAtLocal) {
-    remaining = Math.max(0, Math.ceil((timerEndsAtLocal - Date.now()) / 1000));
-  } else {
-    remaining = 0;
-  }
-
-  const inRound = currentState?.gameState === 'roundActive';
-  timerDisplay.textContent = inRound ? remaining : '--';
+  const r = state?.round;
   timerDisplay.classList.remove('warning', 'critical', 'paused');
-
-  if (timerIsPaused && inRound) {
-    timerDisplay.classList.add('paused');
-  } else if (remaining <= 5 && remaining > 0) {
-    timerDisplay.classList.add('critical');
-  } else if (remaining <= 15 && remaining > 0) {
-    timerDisplay.classList.add('warning');
-  }
-}
-
-// ============================================================
-// UI Update Functions
-// ============================================================
-function updatePlayerLists(state) {
-  teamAList.innerHTML = '';
-  teamBList.innerHTML = '';
-  const canDrag = state.hostId === playerId && state.gameState === 'lobby';
-  dragHint.classList.toggle('hidden', !canDrag);
-
-  state.players.forEach(player => {
-    const li = document.createElement('li');
-    li.className = 'player-item';
-    li.dataset.playerId = player.id;
-    if (player.id === playerId) li.classList.add('is-you');
-    if (player.isHost) li.classList.add('is-host');
-    if (!player.connected) li.classList.add('disconnected');
-
-    if (canDrag) {
-      li.classList.add('draggable');
-      li.draggable = true;
-      li.addEventListener('dragstart', handleDragStart);
-      li.addEventListener('dragend', handleDragEnd);
-    }
-
-    let text = player.name;
-    if (player.id === playerId) text += ' (you)';
-    if (!player.connected) text += ' (offline)';
-    li.textContent = text;
-    (player.team === 'A' ? teamAList : teamBList).appendChild(li);
-  });
-}
-
-// --- Drag & Drop ---
-let draggedPlayerId = null;
-
-function handleDragStart(e) {
-  draggedPlayerId = e.target.dataset.playerId;
-  e.target.classList.add('dragging');
-  e.dataTransfer.effectAllowed = 'move';
-}
-
-function handleDragEnd(e) {
-  e.target.classList.remove('dragging');
-  draggedPlayerId = null;
-  teamADrop.classList.remove('drag-over');
-  teamBDrop.classList.remove('drag-over');
-}
-
-function handleDragOver(e) {
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
-}
-
-function handleDragEnter(e) {
-  e.preventDefault();
-  e.currentTarget.classList.add('drag-over');
-}
-
-function handleDragLeave(e) {
-  if (!e.currentTarget.contains(e.relatedTarget)) {
-    e.currentTarget.classList.remove('drag-over');
-  }
-}
-
-function handleDrop(e) {
-  e.preventDefault();
-  e.currentTarget.classList.remove('drag-over');
-  const newTeam = e.currentTarget.dataset.team;
-  if (draggedPlayerId && newTeam) {
-    socket.emit('move-player', { targetPlayerId: draggedPlayerId, newTeam });
-  }
-}
-
-[teamADrop, teamBDrop].forEach(el => {
-  el.addEventListener('dragover', handleDragOver);
-  el.addEventListener('dragenter', handleDragEnter);
-  el.addEventListener('dragleave', handleDragLeave);
-  el.addEventListener('drop', handleDrop);
-});
-
-function updateActorSelect(state) {
-  actorSelect.innerHTML = '<option value="">Select a player...</option>';
-  if (!state?.players) return;
-  state.players.forEach(p => {
-    if (p.connected) {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = `${p.name} (Team ${p.team})`;
-      actorSelect.appendChild(opt);
-    }
-  });
-}
-
-function updateTransferHostSelect(state) {
-  if (!transferHostSelect) return;
-  transferHostSelect.innerHTML = '<option value="">Select player...</option>';
-  if (!state?.players) return;
-  state.players.forEach(p => {
-    if (p.id !== playerId && p.connected) {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = `${p.name} (Team ${p.team})`;
-      transferHostSelect.appendChild(opt);
-    }
-  });
-}
-
-function updateSkipButton(remaining, max) {
-  skipsRemaining = remaining;
-  if (max >= 999) {
-    skipBtn.textContent = 'Skip';
-    skipBtn.disabled = false;
-  } else if (remaining <= 0) {
-    skipBtn.textContent = 'No Skips Left';
-    skipBtn.disabled = true;
-  } else {
-    skipBtn.textContent = `Skip (${remaining} left)`;
-    skipBtn.disabled = false;
-  }
-}
-
-function updateCurrentRoundWords() {
-  currentRoundWordsEl.innerHTML = '';
-  currentRoundWordsList.forEach((item, index) => {
-    const div = document.createElement('div');
-    div.className = `current-word-item ${item.result}`;
-
-    const span = document.createElement('span');
-    span.className = 'word-text';
-    span.textContent = item.word;
-    div.appendChild(span);
-
-    // Host can undo correct words during active round
-    if (isHost && item.result === 'correct' && currentState?.gameState === 'roundActive') {
-      const btn = document.createElement('button');
-      btn.className = 'undo-btn';
-      btn.textContent = '\u2715';
-      btn.title = 'Undo (actor broke rules)';
-      btn.addEventListener('click', () => {
-        if (confirm(`Undo "${item.word}"? -1 point.`)) {
-          socket.emit('undo-correct', { wordIndex: index });
-        }
-      });
-      div.appendChild(btn);
-    }
-
-    currentRoundWordsEl.appendChild(div);
-  });
-}
-
-function updateRoundHistory(state) {
-  if (!state.roundHistory?.length) {
-    roundHistory.innerHTML = '<p class="no-history">No rounds played yet</p>';
+  if (!r || state.gameState !== 'roundActive') {
+    timerDisplay.textContent = '--';
+    lastTimerSecond = null;
     return;
   }
+  const secs = Math.ceil(remainingMs() / 1000);
+  timerDisplay.textContent = secs;
+  if (r.paused) timerDisplay.classList.add('paused');
+  else if (secs <= 5) timerDisplay.classList.add('critical');
+  else if (secs <= 15) timerDisplay.classList.add('warning');
+  if (secs !== lastTimerSecond && secs <= 3 && secs > 0 && !r.paused && navigator.vibrate) navigator.vibrate(60);
+  lastTimerSecond = secs;
+}
+setInterval(renderTimer, 200);
 
-  roundHistory.innerHTML = '';
-  const reversed = [...state.roundHistory].reverse();
+// ============================================================
+// Rendering — everything derives from the latest server state
+// ============================================================
+const isHost = () => state && state.hostId === state.you;
+const me = () => state?.players.find(p => p.id === state.you);
 
-  reversed.forEach((round, revIdx) => {
-    const origIdx = state.roundHistory.length - 1 - revIdx;
+function render() {
+  if (!state) { showScreen('landing'); renderResume(); return; }
+  if (state.gameState === 'lobby') { renderLobby(); showScreen('lobby'); }
+  else if (state.gameState === 'gameOver') { renderGameOver(); showScreen('gameover'); }
+  else { renderGame(); showScreen('game'); }
+  renderTimer();
+}
 
-    const item = document.createElement('div');
-    item.className = 'history-item';
+function setActive(buttons, attr, value) {
+  buttons.forEach(b => b.classList.toggle('active', b.dataset[attr] === String(value)));
+}
 
-    const header = document.createElement('div');
-    header.className = 'history-header';
-    header.innerHTML = `
-      <span class="history-actor team-${round.actorTeam.toLowerCase()}">${round.actor}</span>
-      <span class="history-score">+${round.correct}</span>
-    `;
+function renderLobby() {
+  const host = isHost();
+  $('display-room-code').textContent = state.code;
+  renderTeams(host);
+  show($('drag-hint'), host);
+  show($('host-lobby-controls'), host);
+  show($('waiting-message'), !host);
 
-    const words = document.createElement('div');
-    words.className = 'history-words';
+  const s = state.settings;
+  setActive(document.querySelectorAll('.lang-btn'), 'lang', s.language);
+  setActive(document.querySelectorAll('.diff-btn'), 'difficulty', s.difficulty);
+  setActive(document.querySelectorAll('.skip-limit-btn'), 'skips', s.maxSkips);
 
-    round.words.forEach((w, wIdx) => {
-      const wc = document.createElement('span');
-      wc.className = `history-word ${w.result}`;
+  const hostPlayer = state.players.find(p => p.isHost);
+  $('host-name').textContent = hostPlayer ? hostPlayer.name : 'host';
+  const langName = s.language === 'he' ? 'עברית' : 'English';
+  $('settings-summary').textContent =
+    `${langName} · ${s.difficulty} · ${s.maxSkips >= 999 ? 'unlimited' : s.maxSkips} skips`;
 
-      const wt = document.createElement('span');
-      wt.textContent = w.word;
-      wc.appendChild(wt);
+  transferHostSelect.replaceChildren(new Option('Select player...', ''));
+  state.players.filter(p => p.id !== state.you && p.connected)
+    .forEach(p => transferHostSelect.appendChild(new Option(`${p.name} (Team ${p.team})`, p.id)));
 
-      if (isHost && w.result === 'correct') {
-        const btn = document.createElement('button');
-        btn.className = 'history-undo-btn';
-        btn.textContent = '\u2715';
-        btn.title = 'Undo';
-        btn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          if (confirm(`Undo "${w.word}"? -1 from Team ${round.actorTeam}.`)) {
-            socket.emit('undo-history-word', { roundIndex: origIdx, wordIndex: wIdx });
-          }
+  const enough = state.players.length >= 2;
+  $('start-game-btn').disabled = !enough;
+  $('start-game-btn').textContent = enough ? 'Start Game' : 'Need 2+ players';
+}
+
+function renderTeams(host) {
+  teamLists.A.replaceChildren();
+  teamLists.B.replaceChildren();
+  for (const p of state.players) {
+    const li = el('li', 'player-item');
+    li.dataset.playerId = p.id;
+    if (p.id === state.you) li.classList.add('is-you');
+    if (p.isHost) li.classList.add('is-host');
+    if (!p.connected) li.classList.add('disconnected');
+    let label = p.name;
+    if (p.id === state.you) label += ' (you)';
+    if (!p.connected) label += ' (offline)';
+    li.appendChild(el('span', 'player-name', label));
+    if (host) {
+      li.draggable = true;
+      li.classList.add('draggable');
+      li.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', p.id); li.classList.add('dragging'); });
+      li.addEventListener('dragend', () => li.classList.remove('dragging'));
+      const sw = el('button', 'mini-btn', '⇄');
+      sw.title = 'Switch team';
+      sw.addEventListener('click', () => send('move-player', { playerId: p.id, team: p.team === 'A' ? 'B' : 'A' }));
+      li.appendChild(sw);
+      if (p.id !== state.you) {
+        const kick = el('button', 'mini-btn danger', '✕');
+        kick.title = 'Remove from room';
+        kick.addEventListener('click', () => {
+          if (confirm(`Remove ${p.name} from the room?`)) send('kick-player', { playerId: p.id });
         });
-        wc.appendChild(btn);
+        li.appendChild(kick);
       }
+    }
+    teamLists[p.team].appendChild(li);
+  }
+}
 
-      words.appendChild(wc);
+teamDrops.forEach(zone => {
+  zone.addEventListener('dragover', (e) => { if (isHost()) { e.preventDefault(); zone.classList.add('drag-over'); } });
+  zone.addEventListener('dragleave', (e) => { if (!zone.contains(e.relatedTarget)) zone.classList.remove('drag-over'); });
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    const id = e.dataTransfer.getData('text/plain');
+    if (id) send('move-player', { playerId: id, team: zone.dataset.team });
+  });
+});
+
+function renderRoster() {
+  const wrap = $('game-teams');
+  wrap.replaceChildren();
+  for (const team of ['A', 'B']) {
+    const line = el('div', `roster roster-${team.toLowerCase()}`);
+    state.players.filter(p => p.team === team).forEach(p => {
+      const chip = el('span', 'roster-chip' + (p.connected ? '' : ' offline') + (p.id === state.you ? ' you' : ''), p.name);
+      if (p.isHost) chip.title = 'Host';
+      line.appendChild(chip);
     });
+    wrap.appendChild(line);
+  }
+}
 
-    item.appendChild(header);
-    item.appendChild(words);
-    roundHistory.appendChild(item);
+function renderGame() {
+  const host = isHost();
+  const r = state.round;
+  const active = state.gameState === 'roundActive' && r;
+  const acting = active && r.actorId === state.you;
+
+  $('score-a').textContent = state.scores.A;
+  $('score-b').textContent = state.scores.B;
+  $('cards-remaining').textContent = state.cardsRemaining;
+  renderRoster();
+
+  show($('round-setup'), state.gameState === 'roundSetup' && host);
+  show($('waiting-setup'), state.gameState === 'roundSetup' && !host);
+  show($('actor-view'), !!acting);
+  show($('guesser-view'), !!active && !acting);
+  show($('current-round-section'), !!active);
+  show($('host-game-controls'), host);
+  show($('end-round-btn'), host && !!active);
+  show($('host-pause-btn'), host && !!active && !acting);
+
+  if (state.gameState === 'roundSetup') {
+    const hostP = state.players.find(p => p.isHost);
+    $('waiting-setup-text').textContent = `Waiting for ${hostP ? hostP.name : 'the host'} to start the next round...`;
+    if (host) renderRoundSetup();
+  }
+
+  // Pause banner
+  const banner = $('paused-banner');
+  if (active && r.paused) {
+    banner.textContent = r.autoPaused ? `⏸ Paused — waiting for ${r.actorName} to reconnect` : '⏸ Paused';
+    show(banner, true);
+  } else show(banner, false);
+
+  if (active) {
+    const correct = r.words.filter(w => w.result === 'correct').length;
+    $('round-correct').textContent = correct;
+    $('guesser-round-correct').textContent = correct;
+    $('current-actor-name').textContent = r.actorName;
+    const myTeam = me()?.team;
+    $('guess-hint').textContent = myTeam === r.actorTeam
+      ? 'Your team is up — shout your guesses!'
+      : `Team ${r.actorTeam} is guessing. Keep them honest!`;
+    renderCurrentRoundWords(host, r);
+    hostPauseBtn.textContent = r.paused ? 'Resume' : 'Pause';
+  }
+
+  if (acting) {
+    const hasWord = !!r.word;
+    currentWordEl.textContent = hasWord ? r.word : 'No more cards!';
+    currentWordEl.classList.toggle('paused-word', r.paused);
+    if (r.paused && hasWord) currentWordEl.textContent = '⏸';
+    pending = false;
+    correctBtn.disabled = !hasWord || r.paused;
+    removeWordBtn.disabled = !hasWord || r.paused;
+    pauseBtn.textContent = r.paused ? 'Resume' : 'Pause';
+    if (r.skipsRemaining === null) { skipBtn.textContent = 'Skip'; skipBtn.disabled = !hasWord || r.paused; }
+    else if (r.skipsRemaining <= 0) { skipBtn.textContent = 'No Skips Left'; skipBtn.disabled = true; }
+    else { skipBtn.textContent = `Skip (${r.skipsRemaining} left)`; skipBtn.disabled = !hasWord || r.paused; }
+  }
+
+  renderHistory(host);
+}
+
+let selectedSeconds = null;
+let lastSuggested = null;
+function renderRoundSetup() {
+  const prev = actorSelect.value;
+  actorSelect.replaceChildren(new Option('Select a player...', ''));
+  for (const p of state.players) {
+    if (!p.connected) continue;
+    actorSelect.appendChild(new Option(`${p.name} (Team ${p.team})${p.id === state.suggestedActorId ? ' ← next' : ''}`, p.id));
+  }
+  // Keep the host's manual pick; otherwise pre-select the suggestion.
+  const stillThere = [...actorSelect.options].some(o => o.value === prev && prev);
+  if (stillThere && prev !== lastSuggested) actorSelect.value = prev;
+  else if (state.suggestedActorId) actorSelect.value = state.suggestedActorId;
+  lastSuggested = state.suggestedActorId;
+  if (selectedSeconds === null) selectedSeconds = state.settings.roundSeconds;
+  setActive(document.querySelectorAll('.timer-btn'), 'time', selectedSeconds);
+}
+
+function renderCurrentRoundWords(host, r) {
+  const wrap = $('current-round-words');
+  wrap.replaceChildren();
+  r.words.forEach((item, i) => {
+    const div = el('div', `current-word-item ${item.result}`);
+    const span = el('span', 'word-text', item.word);
+    span.dir = 'auto';
+    div.appendChild(span);
+    if (host && item.result === 'correct') {
+      const b = el('button', 'undo-btn', '✕');
+      b.title = 'Undo (actor broke the rules)';
+      b.addEventListener('click', () => {
+        if (confirm(`Undo "${item.word}"? -1 point.`)) send('undo', { roundIndex: -1, wordIndex: i });
+      });
+      div.appendChild(b);
+    }
+    wrap.appendChild(div);
   });
 }
 
-function updateGameUI(state) {
-  currentState = state;
-  isHost = state.hostId === playerId;
-
-  // Scores
-  scoreA.textContent = state.scores.A;
-  scoreB.textContent = state.scores.B;
-  cardsRemaining.textContent = state.cardsRemaining;
-
-  // Timer
-  syncTimer(state);
-
-  // History
-  updateRoundHistory(state);
-
-  // Hide all game sections
-  [roundSetup, waitingSetup, actorView, guesserView,
-   endRoundBtn, forceEndRoundBtn, currentRoundSection
-  ].forEach(el => el.classList.add('hidden'));
-
-  if (state.gameState === 'roundSetup') {
-    if (isHost) {
-      roundSetup.classList.remove('hidden');
-      updateActorSelect(state);
-    } else {
-      waitingSetup.classList.remove('hidden');
-    }
-  } else if (state.gameState === 'roundActive') {
-    currentRoundSection.classList.remove('hidden');
-    updateCurrentRoundWords();
-
-    if (state.currentActorId === playerId) {
-      actorView.classList.remove('hidden');
-      if (state.currentWord) currentWord.textContent = state.currentWord;
-    } else {
-      guesserView.classList.remove('hidden');
-      currentActorName.textContent = state.currentActorName || 'Someone';
-    }
-
-    if (isHost) {
-      endRoundBtn.classList.remove('hidden');
-      forceEndRoundBtn.classList.remove('hidden');
-    }
+function renderHistory(host) {
+  const wrap = $('round-history');
+  wrap.replaceChildren();
+  if (!state.history.length) { wrap.appendChild(el('p', 'no-history', 'No rounds played yet')); return; }
+  for (let ri = state.history.length - 1; ri >= 0; ri--) {
+    const round = state.history[ri];
+    const item = el('div', 'history-item');
+    const header = el('div', 'history-header');
+    const actor = el('span', `history-actor team-${round.actorTeam.toLowerCase()}`, round.actor);
+    actor.dir = 'auto';
+    header.append(actor, el('span', 'history-score', `+${round.correct}`));
+    const words = el('div', 'history-words');
+    round.words.forEach((w, wi) => {
+      const chip = el('span', `history-word ${w.result}`);
+      const t = el('span', null, w.word);
+      t.dir = 'auto';
+      chip.appendChild(t);
+      if (host && w.result === 'correct') {
+        const b = el('button', 'history-undo-btn', '✕');
+        b.title = 'Undo';
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (confirm(`Undo "${w.word}"? -1 from Team ${w.team || round.actorTeam}.`)) send('undo', { roundIndex: ri, wordIndex: wi });
+        });
+        chip.appendChild(b);
+      }
+      words.appendChild(chip);
+    });
+    item.append(header, words);
+    wrap.appendChild(item);
   }
-
-  hostGameControls.classList.toggle('hidden', !isHost);
 }
 
-function updateGameOverUI(state) {
-  finalScoreA.textContent = state.scores.A;
-  finalScoreB.textContent = state.scores.B;
-
-  winnerAnnouncement.classList.remove('winner-a', 'winner-b', 'winner-tie');
-  if (state.scores.A > state.scores.B) {
-    winnerAnnouncement.textContent = 'Team A Wins!';
-    winnerAnnouncement.classList.add('winner-a');
-  } else if (state.scores.B > state.scores.A) {
-    winnerAnnouncement.textContent = 'Team B Wins!';
-    winnerAnnouncement.classList.add('winner-b');
-  } else {
-    winnerAnnouncement.textContent = "It's a Tie!";
-    winnerAnnouncement.classList.add('winner-tie');
-  }
-
-  playAgainBtn.classList.toggle('hidden', state.hostId !== playerId);
-}
-
-/**
- * Apply full server state — the single source of truth.
- * Routes to the correct screen and updates all UI.
- */
-function applyFullState(state) {
-  currentState = state;
-  isHost = state.hostId === playerId;
-  currentRoundWordsList = state.currentRoundWords || [];
-
-  if (state.gameState === 'lobby') {
-    displayRoomCode.textContent = state.code;
-    updatePlayerLists(state);
-    updateTransferHostSelect(state);
-    hostLobbyControls.classList.toggle('hidden', !isHost);
-    waitingMessage.classList.toggle('hidden', isHost);
-    showScreen('lobby');
-  } else if (state.gameState === 'gameOver') {
-    updateGameOverUI(state);
-    showScreen('gameover');
-  } else {
-    // roundSetup or roundActive
-    if (state.skipsRemaining !== undefined) {
-      updateSkipButton(state.skipsRemaining, state.maxSkipsPerRound || 2);
-    }
-    updateGameUI(state);
-    showScreen('game');
-  }
+function renderGameOver() {
+  const { A, B } = state.scores;
+  $('final-score-a').textContent = A;
+  $('final-score-b').textContent = B;
+  const w = $('winner-announcement');
+  w.classList.remove('winner-a', 'winner-b', 'winner-tie');
+  if (A > B) { w.textContent = 'Team A Wins!'; w.classList.add('winner-a'); }
+  else if (B > A) { w.textContent = 'Team B Wins!'; w.classList.add('winner-b'); }
+  else { w.textContent = "It's a Tie!"; w.classList.add('winner-tie'); }
+  show($('play-again-btn'), isHost());
+  show($('play-again-wait'), !isHost());
 }
 
 // ============================================================
-// Event Listeners — Landing
+// Landing actions
 // ============================================================
-createBtn.addEventListener('click', () => {
+function nameOrComplain() {
   const name = playerNameInput.value.trim();
-  if (!name) { showToast('Enter your name', 'error'); return; }
-  playerName = name;
-  localStorage.setItem('playerName', name);
-  socket.emit('create-room', { playerId, playerName: name });
+  if (!name) { toast('Enter your name', 'error'); playerNameInput.focus(); return null; }
+  LS.setItem('wayl.name', name);
+  return name;
+}
+
+let busy = false;
+async function enterRoom(code, joinName) {
+  conn.connect(code, joinName);
+  const res = await new Promise((resolve) => {
+    conn.on('hello', resolve);
+    conn.on('bye', (m) => resolve({ ok: false, error: m.message }));
+    setTimeout(() => resolve({ ok: false, error: 'Could not reach the game, try again' }), 10000);
+  });
+  wireConn();
+  if (res.ok && res.member) { saveSession(code); return true; }
+  conn.disconnect();
+  toast(res.ok ? 'Room not found' : res.error, 'error');
+  return false;
+}
+
+$('create-btn').addEventListener('click', async () => {
+  const name = nameOrComplain();
+  if (!name || busy) return;
+  busy = true;
+  const res = await api('api/rooms', { token, name });
+  if (!res.ok) toast(res.error, 'error');
+  else if (await enterRoom(res.code)) toast('Room created! Share the code', 'success');
+  busy = false;
 });
 
-joinBtn.addEventListener('click', () => {
-  const name = playerNameInput.value.trim();
+$('join-btn').addEventListener('click', async () => {
+  const name = nameOrComplain();
+  if (!name || busy) return;
   const code = roomCodeInput.value.trim().toUpperCase();
-  if (!name) { showToast('Enter your name', 'error'); return; }
-  if (!code || code.length !== 4) { showToast('Enter a 4-letter room code', 'error'); return; }
-  playerName = name;
-  localStorage.setItem('playerName', name);
-  socket.emit('join-room', { roomCode: code, playerId, playerName: name });
+  if (!/^[A-Z]{4}$/.test(code)) { toast('Enter the 4-letter room code', 'error'); return; }
+  busy = true;
+  await enterRoom(code, name);
+  busy = false;
 });
 
-// Enter key shortcuts
-roomCodeInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') joinBtn.click();
+$('resume-btn').addEventListener('click', () => {
+  const last = renderResume();
+  if (!last) return;
+  token = last.token;
+  SS.setItem('wayl.token', token);
+  if (last.name) playerNameInput.value = last.name;
+  enterRoom(last.code);
 });
+
+roomCodeInput.addEventListener('input', () => { roomCodeInput.value = roomCodeInput.value.toUpperCase().replace(/[^A-Z]/g, ''); });
+roomCodeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('join-btn').click(); });
 playerNameInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    if (roomCodeInput.value.trim()) joinBtn.click();
-    else createBtn.click();
-  }
+  if (e.key !== 'Enter') return;
+  if (roomCodeInput.value.trim()) $('join-btn').click(); else $('create-btn').click();
 });
 
 // ============================================================
-// Event Listeners — Lobby
+// Lobby actions
 // ============================================================
-difficultyBtns.forEach(btn => btn.addEventListener('click', () => {
-  difficultyBtns.forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  selectedDifficulty = btn.dataset.difficulty;
-}));
+document.querySelectorAll('.lang-btn').forEach(b => b.addEventListener('click', () => send('update-settings', { language: b.dataset.lang })));
+document.querySelectorAll('.diff-btn').forEach(b => b.addEventListener('click', () => send('update-settings', { difficulty: b.dataset.difficulty })));
+document.querySelectorAll('.skip-limit-btn').forEach(b => b.addEventListener('click', () => send('update-settings', { maxSkips: Number(b.dataset.skips) })));
 
-languageBtns.forEach(btn => btn.addEventListener('click', () => {
-  languageBtns.forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  selectedLanguage = btn.dataset.lang;
-}));
-
-skipLimitBtns.forEach(btn => btn.addEventListener('click', () => {
-  skipLimitBtns.forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  selectedMaxSkips = parseInt(btn.dataset.skips);
-  socket.emit('set-max-skips', { maxSkips: selectedMaxSkips });
-}));
-
-leaveRoomBtn.addEventListener('click', () => {
-  if (confirm('Leave the room?')) {
-    socket.emit('leave-room');
-    localStorage.removeItem('roomCode');
-    roomCode = null;
-    showScreen('landing');
-  }
-});
-
-leaveGameBtn.addEventListener('click', () => {
-  if (confirm('Leave the game?')) {
-    socket.emit('leave-room');
-    localStorage.removeItem('roomCode');
-    roomCode = null;
-    showScreen('landing');
-  }
-});
-
-transferHostBtn.addEventListener('click', () => {
+$('transfer-host-btn').addEventListener('click', () => {
   const id = transferHostSelect.value;
-  if (!id) { showToast('Select a player', 'error'); return; }
-  socket.emit('transfer-host', { newHostId: id });
+  if (!id) { toast('Select a player', 'error'); return; }
+  send('transfer-host', { playerId: id });
 });
 
-startGameBtn.addEventListener('click', () => {
-  socket.emit('start-game', { difficulty: selectedDifficulty, language: selectedLanguage });
+$('start-game-btn').addEventListener('click', () => send('start-game'));
+
+$('invite-btn').addEventListener('click', async () => {
+  const url = `${location.origin}${basePath}?room=${state.code}`;
+  try {
+    if (navigator.share && matchMedia('(pointer: coarse)').matches) await navigator.share({ title: 'Why Are You Like This?', url });
+    else { await navigator.clipboard.writeText(url); toast('Invite link copied', 'success'); }
+  } catch { /* user cancelled */ }
 });
 
+function leave() {
+  conn.call('leave-room').finally(() => conn.disconnect());
+  saveSession(null);
+  state = null;
+  render();
+}
+$('leave-room-btn').addEventListener('click', () => { if (confirm('Leave the room?')) leave(); });
+$('leave-game-btn').addEventListener('click', () => { if (confirm('Leave the game?')) leave(); });
+$('back-to-lobby-btn').addEventListener('click', leave);
+
 // ============================================================
-// Event Listeners — Game
+// Game actions
 // ============================================================
-timerBtns.forEach(btn => btn.addEventListener('click', () => {
-  timerBtns.forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  selectedTimer = parseInt(btn.dataset.time);
+document.querySelectorAll('.timer-btn').forEach(b => b.addEventListener('click', () => {
+  selectedSeconds = Number(b.dataset.time);
+  setActive(document.querySelectorAll('.timer-btn'), 'time', selectedSeconds);
 }));
 
-startRoundBtn.addEventListener('click', () => {
+$('start-round-btn').addEventListener('click', () => {
   const actorId = actorSelect.value;
-  if (!actorId) { showToast('Select an actor', 'error'); return; }
-  socket.emit('start-round', { actorId, timerDuration: selectedTimer });
+  if (!actorId) { toast('Select an actor', 'error'); return; }
+  send('start-round', { actorId, seconds: selectedSeconds || state.settings.roundSeconds });
 });
 
-correctBtn.addEventListener('click', () => socket.emit('mark-correct'));
-skipBtn.addEventListener('click', () => socket.emit('mark-skip'));
+// One tap = one card. Buttons lock until the next state arrives, and the
+// server ignores taps for a card that has already changed (seq mismatch).
+let pending = false;
+function cardAction(event) {
+  if (pending || !state?.round) return;
+  pending = true;
+  correctBtn.disabled = skipBtn.disabled = removeWordBtn.disabled = true;
+  send(event, { seq: state.round.cardSeq }).then((res) => {
+    if (!res.ok) { pending = false; render(); }
+  });
+}
+correctBtn.addEventListener('click', () => cardAction('correct'));
+skipBtn.addEventListener('click', () => cardAction('skip'));
 
-removeWordBtn.addEventListener('click', () => {
-  socket.emit('pause-timer');
-  if (confirm("Remove this word permanently? It won't appear in future games.")) {
-    socket.emit('remove-word');
-  }
-  socket.emit('resume-timer');
+removeWordBtn.addEventListener('click', async () => {
+  if (!state?.round) return;
+  const seq = state.round.cardSeq;
+  const wasPaused = state.round.paused;
+  if (!wasPaused) await send('pause');
+  const ok = confirm("Remove this word permanently? It won't appear in future games.");
+  if (ok) await send('remove-word', { seq });
+  if (!wasPaused) send('resume');
 });
 
-endRoundBtn.addEventListener('click', () => socket.emit('end-round'));
-
-forceEndRoundBtn.addEventListener('click', () => {
-  if (confirm('Force end the round? Use if the game is stuck.')) {
-    socket.emit('force-end-round');
-  }
-});
-
-endGameBtn.addEventListener('click', () => {
-  if (confirm('End the game?')) socket.emit('end-game');
-});
+pauseBtn.addEventListener('click', () => send(state?.round?.paused ? 'resume' : 'pause'));
+hostPauseBtn.addEventListener('click', () => send(state?.round?.paused ? 'resume' : 'pause'));
+$('end-round-btn').addEventListener('click', () => { if (confirm('End this round now?')) send('end-round'); });
+$('end-game-btn').addEventListener('click', () => { if (confirm('End the game for everyone?')) send('end-game'); });
+$('play-again-btn').addEventListener('click', () => send('reset-game'));
 
 // ============================================================
-// Event Listeners — Game Over
+// Socket events
 // ============================================================
-playAgainBtn.addEventListener('click', () => socket.emit('reset-game'));
+let bannerTimer = null;
+function setConnected(ok) {
+  clearTimeout(bannerTimer);
+  if (ok) { show(connBanner, false); return; }
+  // Don't flash the banner for sub-second blips.
+  bannerTimer = setTimeout(() => show(connBanner, !!roomCode), 1200);
+}
 
-backToLobbyBtn.addEventListener('click', () => {
-  socket.emit('leave-room');
-  localStorage.removeItem('roomCode');
-  roomCode = null;
-  showScreen('landing');
-});
+function endSession(msg, kind = 'error') {
+  conn.disconnect();
+  saveSession(null);
+  state = null;
+  render();
+  if (msg) toast(msg, kind);
+}
 
-// ============================================================
-// Socket Events — Connection
-// ============================================================
-socket.on('connect', () => {
-  console.log('[ws] Connected:', socket.id);
-
-  // Single reconnection path: if we have a stored session, try to rejoin
-  const pid = localStorage.getItem('playerId');
-  const rc = localStorage.getItem('roomCode');
-  const pn = localStorage.getItem('playerName');
-
-  if (pid && rc && pn) {
-    console.log('[ws] Attempting rejoin to', rc);
-    socket.emit('rejoin', { playerId: pid, roomCode: rc, playerName: pn });
-  }
-});
-
-socket.on('disconnect', (reason) => {
-  console.log('[ws] Disconnected:', reason);
-  // Only show toast for unexpected disconnects
-  if (reason !== 'io client disconnect') {
-    showToast('Connection lost, reconnecting...', 'info');
-  }
-});
-
-socket.on('connect_error', (err) => {
-  console.log('[ws] Connection error:', err.message);
-});
-
-// ============================================================
-// Socket Events — Room
-// ============================================================
-socket.on('room-created', (data) => {
-  roomCode = data.roomCode;
-  localStorage.setItem('roomCode', roomCode);
-  applyFullState(data.state);
-  showToast('Room created! Share the code', 'success');
-});
-
-socket.on('room-joined', (data) => {
-  roomCode = data.state.code;
-  localStorage.setItem('roomCode', roomCode);
-  applyFullState(data.state);
-  showToast(`Joined Team ${data.team}!`, 'success');
-});
-
-socket.on('reconnected', (data) => {
-  roomCode = data.state.code;
-  localStorage.setItem('roomCode', roomCode);
-  applyFullState(data.state);
-  showToast('Reconnected!', 'success');
-});
-
-socket.on('rejoin-failed', () => {
-  localStorage.removeItem('roomCode');
-  roomCode = null;
-  // Silent — just go to landing
-  showScreen('landing');
-});
-
-// General state sync — the server sends this after most mutations
-socket.on('state-sync', (data) => {
-  if (!data.state) return;
-  currentState = data.state;
-  isHost = data.state.hostId === playerId;
-  currentRoundWordsList = data.state.currentRoundWords || [];
-
-  if (data.state.gameState === 'lobby') {
-    displayRoomCode.textContent = data.state.code;
-    updatePlayerLists(data.state);
-    updateTransferHostSelect(data.state);
-    hostLobbyControls.classList.toggle('hidden', !isHost);
-    waitingMessage.classList.toggle('hidden', isHost);
-  } else if (data.state.gameState === 'gameOver') {
-    updateGameOverUI(data.state);
-  } else {
-    updateGameUI(data.state);
-  }
-});
-
-// ============================================================
-// Socket Events — Player notifications
-// ============================================================
-socket.on('player-joined', (data) => {
-  showToast(`${data.playerName} joined Team ${data.team}`, 'info');
-});
-
-socket.on('player-left', (data) => {
-  if (currentState?.hostId === playerId && !isHost) {
-    isHost = true;
-    showToast('You are now the host', 'info');
-  }
-  showToast(`${data.playerName} left`, 'info');
-});
-
-socket.on('player-disconnected', (data) => {
-  // Delay toast — they often reconnect within seconds
-  const timeout = setTimeout(() => {
-    showToast(`${data.playerName} disconnected`, 'info');
-    pendingDisconnectToasts.delete(data.playerId);
-  }, 10000);
-  pendingDisconnectToasts.set(data.playerId, timeout);
-});
-
-socket.on('player-reconnected', (data) => {
-  const pending = pendingDisconnectToasts.get(data.playerId);
-  if (pending) {
-    clearTimeout(pending);
-    pendingDisconnectToasts.delete(data.playerId);
-    // Don't show "reconnected" if we never showed "disconnected"
-  } else {
-    showToast(`${data.playerName} reconnected`, 'success');
-  }
-});
-
-// ============================================================
-// Socket Events — Game flow
-// ============================================================
-socket.on('game-started', (data) => {
-  applyFullState(data.state);
-  showToast('Game started!', 'success');
-});
-
-socket.on('round-started', (data) => {
-  currentState = data.state;
-  currentRoundWordsList = data.state.currentRoundWords || [];
-  updateSkipButton(data.state.skipsRemaining, data.state.maxSkipsPerRound);
-  updateGameUI(data.state);
-  updateCurrentRoundWords();
-
-  const count = currentRoundWordsList.filter(w => w.result === 'correct').length;
-  roundCorrect.textContent = count;
-  guesserRoundCorrect.textContent = count;
-
-  if (data.state.currentActorId === playerId) {
-    showToast("You're acting! Go!", 'success');
-  }
-  showScreen('game');
-});
-
-socket.on('word-result', (data) => {
-  // Scores
-  scoreA.textContent = data.scores.A;
-  scoreB.textContent = data.scores.B;
-
-  // Track word locally
-  currentRoundWordsList.push({ word: data.word, result: data.result });
-  updateCurrentRoundWords();
-
-  // Skip button
-  if (data.skipsRemaining !== undefined) {
-    updateSkipButton(data.skipsRemaining, currentState?.maxSkipsPerRound || 2);
-  }
-
-  // Correct count
-  const count = currentRoundWordsList.filter(w => w.result === 'correct').length;
-  roundCorrect.textContent = count;
-  guesserRoundCorrect.textContent = count;
-
-  // Next word (actor only)
-  if (data.nextWord !== undefined) {
-    if (data.nextWord === null) {
-      currentWord.textContent = 'No more cards!';
-      correctBtn.disabled = true;
-      skipBtn.disabled = true;
-    } else {
-      currentWord.textContent = data.nextWord;
+// (Re)attach handlers for the live connection.
+function wireConn() {
+  conn.on('hello', (res) => {
+    setConnected(true);
+    if (res.ok && !res.member) endSession('That game has ended', 'info');
+  });
+  conn.on('down', () => setConnected(false));
+  conn.on('state', ({ s }) => {
+    clockOffset = s.serverTime - Date.now();
+    const prev = state;
+    state = s;
+    if (prev && prev.gameState !== 'roundActive' && s.gameState === 'roundActive' && s.round.actorId === s.you) {
+      toast("You're acting! Go!", 'success');
+      if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
     }
-  }
-
-  if (data.result === 'correct') showToast('Correct! +1', 'success');
-});
-
-socket.on('word-undone', (data) => {
-  if (data.wordIndex >= 0 && data.wordIndex < currentRoundWordsList.length) {
-    currentRoundWordsList[data.wordIndex].result = 'cancelled';
-  }
-  updateCurrentRoundWords();
-  scoreA.textContent = data.scores.A;
-  scoreB.textContent = data.scores.B;
-
-  const count = currentRoundWordsList.filter(w => w.result === 'correct').length;
-  roundCorrect.textContent = count;
-  guesserRoundCorrect.textContent = count;
-  showToast(`"${data.word}" undone (-1)`, 'info');
-});
-
-socket.on('word-removed', (data) => {
-  showToast(`"${data.word}" removed`, 'info');
-  if (data.nextWord !== undefined) {
-    if (data.nextWord === null) {
-      currentWord.textContent = 'No more cards!';
-      correctBtn.disabled = true;
-      skipBtn.disabled = true;
-      removeWordBtn.disabled = true;
-    } else {
-      currentWord.textContent = data.nextWord;
+    if (prev?.round && s.gameState === 'roundSetup') selectedSeconds = s.settings.roundSeconds;
+    render();
+  });
+  conn.on('word', (w) => {
+    if (w.result === 'correct') toast(`✓ ${w.word} (+1 Team ${w.team})`, 'success');
+  });
+  conn.on('notice', (n) => toast(n.text, n.kind));
+  conn.on('bye', (m) => {
+    if (m.reason === 'replaced') {
+      // Another tab/device took this seat: this tab becomes a fresh player.
+      token = randomToken();
+      SS.setItem('wayl.token', token);
+      SS.removeItem('wayl.room');
+      conn.disconnect();
+      roomCode = null;
+      state = null;
+      render();
+      toast(m.message, 'error');
+      return;
     }
-  }
-});
+    endSession(m.message, m.reason === 'not-found' ? 'info' : 'error');
+  });
+}
+wireConn();
 
-socket.on('skip-denied', (data) => {
-  showToast(data.message, 'error');
-  updateSkipButton(0, data.maxSkips);
-});
-
-socket.on('timer-paused', (data) => {
-  timerIsPaused = true;
-  pauseRemainingSec = data.timeRemaining || 0;
-  timerEndsAtLocal = null;
-  renderTimer();
-});
-
-socket.on('timer-resumed', (data) => {
-  timerIsPaused = false;
-  if (data.roundEndsAt && data.serverTime) {
-    const offset = data.serverTime - Date.now();
-    timerEndsAtLocal = data.roundEndsAt - offset;
-  }
-  startTimerTick();
-});
-
-socket.on('round-ended', (data) => {
-  currentRoundWordsList = [];
-  stopTimerTick();
-  applyFullState(data.state);
-  // Re-enable buttons
-  correctBtn.disabled = false;
-  skipBtn.disabled = false;
-  removeWordBtn.disabled = false;
-  actorSelect.value = '';
-  showToast('Round ended!', 'info');
-});
-
-socket.on('game-over', (data) => {
-  stopTimerTick();
-  applyFullState(data.state);
-});
-
-socket.on('game-reset', (data) => {
-  stopTimerTick();
-  applyFullState(data.state);
-  showToast('Back to lobby', 'info');
-});
-
-socket.on('room-closed', (data) => {
-  stopTimerTick();
-  localStorage.removeItem('roomCode');
-  roomCode = null;
-  showScreen('landing');
-  showToast(data.message, 'error');
-});
-
-socket.on('error', (data) => showToast(data.message, 'error'));
+// Resume this tab's seat after a reload.
+if (roomCode) { conn.connect(roomCode); setConnected(false); }
 
 // ============================================================
-// Heartbeat (keeps connection alive through Cloudflare / proxies)
+// Phone friendliness
 // ============================================================
-setInterval(() => {
-  if (socket.connected && roomCode) socket.emit('heartbeat');
-}, 30000);
-
-// ============================================================
-// Visibility change — reconnect when tab becomes visible
-// ============================================================
+// Keep the screen awake while in a room (sleeping phones drop sockets).
+let wakeLock = null;
+async function keepAwake() {
+  if (!('wakeLock' in navigator) || document.hidden || !roomCode || wakeLock) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch { /* not allowed, fine */ }
+}
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && roomCode) {
-    if (!socket.connected) {
-      socket.connect();
-    } else {
-      socket.emit('heartbeat');
-    }
-  }
+  if (document.hidden) return;
+  keepAwake();
+  conn.poke();
 });
+document.addEventListener('click', keepAwake);
+
+render();
