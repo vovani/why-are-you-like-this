@@ -72,8 +72,8 @@ test('scores go to the actor team at the time, undo reverses exactly', () => {
   r.undoWord(0, 1, T0);
   assert.deepEqual(r.scores, { A: 0, B: 0 });
   assert.equal(r.history[0].correct, 0);
-  assert.throws(() => r.undoWord(0, 1, T0), /Nothing to undo/);
-  assert.throws(() => r.undoWord(5, 0, T0), /Nothing to undo/);
+  assert.throws(() => r.undoWord(0, 1, T0), /Not counted anyway/);
+  assert.throws(() => r.undoWord(5, 0, T0), /not found/);
 });
 
 test('skip limits, including 0 and unlimited', () => {
@@ -241,4 +241,52 @@ test('keepPresence restore leaves a live room untouched', () => {
   assert.ok(copy.players.get('p0').connected);
   assert.ok(!copy.isPaused());
   assert.equal(copy.timeRemainingMs(T0 + 5_000), 55_000);
+});
+
+test('host can flip any word both ways; scores always equal correct words', () => {
+  const r = playing();
+  r.updateSettings({ maxSkips: 1 });
+  r.startRound('p1', 60, T0); // team B
+  r.markSkip(r.cardSeq, [], T0);
+  r.markCorrect(r.cardSeq, [], T0);
+  assert.equal(r.round.skipsUsed, 1);
+
+  // live round: skip → correct gives the skip back
+  r.markWord(-1, 0, true, T0);
+  assert.equal(r.round.words[0].result, 'correct');
+  assert.equal(r.round.skipsUsed, 0);
+  assert.deepEqual(r.scores, { A: 0, B: 2 });
+
+  // correct → not counted → counted again
+  r.markWord(-1, 1, false, T0);
+  assert.deepEqual(r.scores, { A: 0, B: 1 });
+  r.markWord(-1, 1, true, T0);
+  assert.deepEqual(r.scores, { A: 0, B: 2 });
+  assert.throws(() => r.markWord(-1, 1, true, T0), /Already counted/);
+
+  // history: same, and the round's +N follows
+  r.endRound(T0);
+  r.markWord(0, 0, false, T0);
+  assert.equal(r.history[0].correct, 1);
+  assert.throws(() => r.markWord(0, 0, false, T0), /Not counted/);
+  r.markWord(0, 0, true, T0);
+  assert.equal(r.history[0].correct, 2);
+  assert.deepEqual(r.scores, { A: 0, B: 2 });
+
+  // the old "undo" still works, and bad indexes are rejected
+  r.undoWord(0, 1, T0);
+  assert.deepEqual(r.scores, { A: 0, B: 1 });
+  assert.throws(() => r.markWord(9, 0, true, T0), /not found/);
+  assert.throws(() => r.markWord(-1, 0, true, T0), /not found/, 'no live round now');
+});
+
+test('a skip in an earlier round can be turned into a point for that team', () => {
+  const r = playing();
+  r.startRound('p0', 60, T0); // team A
+  r.markSkip(r.cardSeq, [], T0);
+  r.endRound(T0);
+  r.startRound('p1', 60, T0); // team B now acting
+  r.markWord(0, 0, true, T0);
+  assert.deepEqual(r.scores, { A: 1, B: 0 }, 'point goes to the team that played it');
+  assert.equal(r.round.skipsUsed, 0, "doesn't touch the live round's skips");
 });

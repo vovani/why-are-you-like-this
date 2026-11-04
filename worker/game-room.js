@@ -308,10 +308,12 @@ export class GameRoom extends DurableObject {
       case 'pause': actorOrHost(); room.pause(); break;
       case 'resume': actorOrHost(); room.resume(); break;
       case 'end-round': host(); room.endRound(); break;
-      case 'undo': {
+      case 'undo':        // old clients
+      case 'mark-word': {
         host();
-        const word = room.undoWord(p.roundIndex, p.wordIndex);
-        this._notify({ t: 'notice', text: `"${word}" undone (−1)`, kind: 'info' });
+        const correct = ev === 'mark-word' && p.correct === true;
+        const word = room.markWord(p.roundIndex, p.wordIndex, correct);
+        this._notify({ t: 'notice', text: correct ? `"${word}" counted (+1)` : `"${word}" not counted (−1)`, kind: 'info' });
         break;
       }
       case 'end-game': host(); room.endGame(); break;

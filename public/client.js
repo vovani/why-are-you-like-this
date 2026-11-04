@@ -450,6 +450,22 @@ function renderRoundSetup() {
   setActive(document.querySelectorAll('.timer-btn'), 'time', selectedSeconds);
 }
 
+/** Host-only: flip a word between counted and not counted. */
+function fixButton(item, roundIndex, wordIndex) {
+  const counted = item.result === 'correct';
+  const b = el('button', `fix-btn ${counted ? 'remove' : 'add'}`, counted ? '✕' : '✓');
+  b.title = counted ? 'Not counted (−1)' : 'Count it (+1)';
+  b.setAttribute('aria-label', `${b.title}: ${item.word}`);
+  b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const q = counted
+      ? `Don't count "${item.word}"? −1 for Team ${item.team}.`
+      : `Count "${item.word}" as correct? +1 for Team ${item.team}.`;
+    if (confirm(q)) send('mark-word', { roundIndex, wordIndex, correct: !counted });
+  });
+  return b;
+}
+
 function renderCurrentRoundWords(host, r) {
   const wrap = $('current-round-words');
   wrap.replaceChildren();
@@ -458,14 +474,7 @@ function renderCurrentRoundWords(host, r) {
     const span = el('span', 'word-text', item.word);
     span.dir = 'auto';
     div.appendChild(span);
-    if (host && item.result === 'correct') {
-      const b = el('button', 'undo-btn', '✕');
-      b.title = 'Undo (actor broke the rules)';
-      b.addEventListener('click', () => {
-        if (confirm(`Undo "${item.word}"? -1 point.`)) send('undo', { roundIndex: -1, wordIndex: i });
-      });
-      div.appendChild(b);
-    }
+    if (host) div.appendChild(fixButton(item, -1, i));
     wrap.appendChild(div);
   });
 }
@@ -487,15 +496,7 @@ function renderHistory(host) {
       const t = el('span', null, w.word);
       t.dir = 'auto';
       chip.appendChild(t);
-      if (host && w.result === 'correct') {
-        const b = el('button', 'history-undo-btn', '✕');
-        b.title = 'Undo';
-        b.addEventListener('click', (e) => {
-          e.stopPropagation();
-          if (confirm(`Undo "${w.word}"? -1 from Team ${w.team || round.actorTeam}.`)) send('undo', { roundIndex: ri, wordIndex: wi });
-        });
-        chip.appendChild(b);
-      }
+      if (host) chip.appendChild(fixButton({ ...w, team: w.team || round.actorTeam }, ri, wi));
       words.appendChild(chip);
     });
     item.append(header, words);
