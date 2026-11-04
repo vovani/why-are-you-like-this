@@ -269,6 +269,11 @@ test('kick and leave', async (t) => {
   await until(() => host.state.players.length === 2);
   await others[0].call('leave-room');
   await until(() => host.state.players.length === 1);
+  const last = await host.call('leave-room');
+  assert.equal(last.ok, true, 'last player leaving still gets an answer');
+  const probe = new Player();
+  t.after(() => probe.close());
+  assert.equal((await probe.enter(host.state.code, 'X')).member, false, 'empty room deleted');
 });
 
 test('removed words are banned for future games', async (t) => {

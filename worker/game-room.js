@@ -140,7 +140,8 @@ export class GameRoom extends DurableObject {
 
   async _deleteRoom(message) {
     const code = this.room?.code;
-    for (const ws of this._sockets()) this._bye(ws, 'closed', message);
+    // Seated sockets only: whoever triggered this (last player leaving) still gets their ack.
+    for (const ws of this._sockets()) if (this._pidOf(ws)) this._bye(ws, 'closed', message);
     this.room = null;
     await this.ctx.storage.deleteAll();
     await this.ctx.storage.deleteAlarm();
